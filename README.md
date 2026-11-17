@@ -61,10 +61,10 @@ tar czf /root/modules.bak.tar.gz /lib/modules/
 ### 2. 替换内核
 ```bash
 # 把新的boot.img传到盒子/root目录
-dd if=/root/boot.img of=/dev/mmcblk0p17 bs=1M conv=fsync
+dd if=/root/boot.img of=/dev/mmcblk0p15 bs=1M conv=fsync
 sync
 ```
-> 注意：分区号`mmcblk0p17`对应dtbo/boot分区，请先用`ls -l /dev/disk/by-partlabel/`确认你的boot分区号，作者Debian分区表通常boot在p17。
+> 注意：分区号`mmcblk0p15`对应dtbo/boot分区，请先用`ls -l /dev/disk/by-partlabel/`确认你的boot分区号，作者Debian分区表通常boot在p15。
 
 ### 3. 安装模块
 ```bash
