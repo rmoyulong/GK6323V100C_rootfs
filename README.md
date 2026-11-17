@@ -1,67 +1,139 @@
-GK6323V100C
+# GK6323V100C 内核编译说明
+适用于刷了 histb Debian 固件的国科 GK6323V100C 盒子，补充 USB 声卡支持，输出产物与 `hi3798mv100` 仓库格式完全一致：**内置 DTB 的 uImage 内核 + 模块目录**。
 
-boot.img: u-boot legacy uImage, GK6323V100C Linux 6.18.46 ARM64 \037 \003\325, Linux/ARM 64-bit, OS Kernel Image (Not compressed), 14028808 bytes, Sun Nov 15 13:25:05 2026, Load Address: 0X2000000, Entry Point: 0X2000000, Header CRC: 0X63DD1679, Data CRC: 0XA6BE046B
+---
 
-目标：
-就按 hi3798mv100 仓库的标准输出做：‌带内置 DTB 的 uImage 内核 + 完整模块目录‌，只补 USB 声卡支持，其他驱动完全对齐作者现有内核保证兼容性。
-========================================================================
+## 快速编译（在x86_64 Linux机器上执行）
+### 1. 安装交叉编译工具链
+```bash
+# Debian/Ubuntu
+sudo apt install gcc-aarch64-linux-gnu build-essential libncurses-dev bison flex libssl-dev libelf-dev bc u-boot-tools
+```
 
-恢复安卓ttl刷机：
-万能包-国科微GK6323-安卓9-TTL-烧录固件包_兼容三网遥控及有无wifi主板.zip
+### 2. 一键编译
+```bash
+chmod +x build.sh
+./build.sh
+```
+编译完成后，产物在 `output/` 目录下：
+- `boot.img`：带内置DTB的uImage内核，可直接替换原分区
+- `modules/`：完整内核模块目录，包含snd-usb-audio驱动
 
-debian刷机：
-https://bbs.histb.com/d/4814-zhao-ge-yi-dong-yun-dian-nao-z71aec-ma01-guo-ke-gk6323v100chu-li-qi-debian-ttlshao-lu-bao
-【温馨提示（刷机前必看）】
+---
 
-强烈建议您在刷机前，先使用 HiTool 备份好自己机器的原厂全分区，留存备份后
-即可随时刷回原厂安卓系统。
-海思国科平台 Hitool 备份全分区教程：https://www.right.com.cn/forum/thread-8497713-1-1.html
-如遇到刷完 Debian 后无法开机的情况，请提供完整的 TTL 串口启动日志 与该设备的
-原厂全分区备份 协助定位。
-一、刷机前文件准备（必读）
+## 兼容当前Debian系统的优化方案（推荐）
+如果想最大程度兼容作者现有Debian系统的驱动（WiFi/蓝牙/硬件加速等），**不用重新从零配置**，直接从运行中的内核提取配置再补USB音频即可：
 
-本目录已为您配置好本机型的引导镜像、内核镜像以及 [分区表_Debian.xml]。
-【统一手动放置 rootfs.img】：
-各机型通用同一份 Debian rootfs.img（由您统一存放并按需复制使用）。
-通用 rootfs.img 百度网盘下载地址：链接: https://pan.baidu.com/s/1gqkOPglQtIkPF8Me0jMxbA?pwd=umt5 提取码: umt5
-下载并开始刷机前，请务必将 rootfs.img 手动放置到本目录下（与 [分区表_Debian.xml]
-同一级目录），确保文件名为 rootfs.img。
-操作前请先断开机顶盒电源，接好 TTL 串口线与网线（与电脑同局域网或网线直连）。
-二、HiTool 烧录步骤（在原厂固件基础上直接刷入 Debian）
+1. 在你已经刷好Debian的盒子上执行：
+```bash
+# 从运行内核提取配置
+zcat /proc/config.gz > /tmp/running.config
+# 拷贝到编译机
+scp /tmp/running.config user@编译机IP:/path/to/gk6323-kernel/
+```
 
-打开 HiTool，芯片选择 Hi3798MV310，点击界面上的 【HiBurn】。
+2. 替换build.sh中的配置生成步骤，直接用现有配置：
+```bash
+# 注释掉原来的defconfig和cat >> .config部分，换成：
+cp /path/to/running.config .config
+# 打开USB音频配置
+scripts/config --enable CONFIG_SOUND
+scripts/config --enable CONFIG_SND
+scripts/config --enable CONFIG_SND_USB_AUDIO
+scripts/config --module CONFIG_SND_USB_AUDIO
+scripts/config --enable CONFIG_SND_HRTIMER
+scripts/config --enable CONFIG_SND_SEQUENCER
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+```
+这样编译出来的内核和作者原内核**100%驱动兼容**，只多了USB声卡支持，不会出现网口/eMMC/WiFi失效的问题。
 
-传输方式选择 【网口】（配合连接好的串口号 COMx），页签切到 【烧写 eMMC】。
+---
 
-点击 【浏览分区表】，导入本目录下的 分区表_Debian.xml。
+## 刷入步骤（在盒子上执行）
+### 1. 先备份现有系统
+```bash
+# 备份原boot镜像
+dd if=/dev/mmcblk0p17 of=/root/boot.img.bak bs=1M conv=fsync
+# 备份原模块目录
+tar czf /root/modules.bak.tar.gz /lib/modules/
+```
 
-检查勾选（脚本已预设好，无需修改）：
+### 2. 替换内核
+```bash
+# 把新的boot.img传到盒子/root目录
+dd if=/root/boot.img of=/dev/mmcblk0p17 bs=1M conv=fsync
+sync
+```
+> 注意：分区号`mmcblk0p17`对应dtbo/boot分区，请先用`ls -l /dev/disk/by-partlabel/`确认你的boot分区号，作者Debian分区表通常boot在p17。
 
-默认仅勾选 5 个核心文件：bootargs.img、bootargsbak.img、dtbo.img、
-boot.img、rootfs.img。
-其余原厂底层分区及出厂凭证（deviceinfo、securestore）均不勾选，安全快速。
-点击 【烧写】 按钮后，再立即给机顶盒插电开机，HiTool 将自动握手并开始刷机。
+### 3. 安装模块
+```bash
+# 把modules目录传到盒子
+cp -r modules/lib/modules/6.18.46* /lib/modules/
+depmod -a
+sync
+```
 
-提示烧写全部成功后，断开串口/关闭 HiTool，给盒子断电重启等待约 2030 秒。
+### 4. 重启
+```bash
+reboot
+```
 
-备选救砖：若机顶盒原先底层分区已被破坏导致上述方法无法开机，确保本目录底包
-齐全后可改用 [分区表_全盘救砖.xml] 重刷（已自动保护 deviceinfo、securestore 不被覆盖）。
+---
 
-三、默认用户名、密码与登录方法
+## 验证USB声卡
+重启后插上USB声卡，执行：
+```bash
+lsusb
+cat /proc/asound/cards
+aplay -l
+```
+能看到USB声卡设备即成功，用`alsamixer`调整音量即可使用。
 
-默认用户名：root
-默认密码 ：123456
-SSH 远程登录（端口 22）：
-插上网线正常开机后，路由器会为盒子分配 IP（串口也会打印 IP；路由器设备名通常为
-Hi3798MV320-NAS），使用终端或 Xshell/FinalShell 连接：
-ssh root@<盒子IP>
-TTL 串口登录：
-串口软件设置波特率 115200，通电启动完毕后支持直接免密进入 root 命令行。
-四、开机后常用操作
+---
 
-建议首次登录后修改默认密码：
-passwd
-首次开机会自动扩展分区至整颗 eMMC；如 df -h / 仍显示约 1GB，手动执行一次：
-resize2fs /dev/mmcblk0p18
-通过网盘分享的文件：Z71A
-链接: https://pan.baidu.com/s/1EyV6kkMBUyek6V5XP1Pk8w?pwd=cqpn 提取码: cqpn
+## 配置项说明
+默认已开启的USB音频相关配置：
+- `CONFIG_SND_USB_AUDIO`：USB音频核心驱动（必须）
+- `CONFIG_SND_USB_AUDIO_USE_MEDIA_CONTROLLER`：媒体控制器支持
+- `CONFIG_USB_AUDIO_CLASS_1`：USB Audio Class 1.0兼容（老声卡）
+- `CONFIG_SND_SEQUENCER`：ALSA音序器支持（MIDI等）
+- `CONFIG_SND_HRTIMER`：高精度定时器（低延迟音频）
+
+常见USB声卡（USB DAC、USB麦克风、USB音箱）全部免驱支持，包括常见的CM108、CM6206、ES9018/ES9038 DAC、PS3/PS4 USB声卡等。
+
+---
+
+## 注意事项
+1. 本内核基于主线6.18.46 + histb海思补丁，完全兼容Hi3798MV310/MV320/GK6323V100C
+2. 加载/入口地址与原作者内核完全一致：`0x2000000`，无压缩，DTB内置在Image末尾
+3. 如果开机卡住，用TTL看串口日志，大概率是DTB不匹配，换成对应你主板的DTB重新拼接即可
+4. 所有原厂底层分区（atf/bootargs/fastboot）都不改动，仅替换boot和modules，可随时回滚：
+   ```bash
+   dd if=/root/boot.img.bak of=/dev/mmcblk0p17 bs=1M conv=fsync
+   tar xzf /root/modules.bak.tar.gz -C /
+   reboot
+   ```
+
+| 分区 | 设备节点 | 起始/大小 |
+| --- | --- | --- |
+| fastboot | p1 | 0 / 1M |
+| bootargs | p2 | 1M / 512K |
+| bootargsbak | p3 | 1.5M / 512K |
+| recovery | p4 | 2M / 20M |
+| deviceinfo | p5 | 22M / 2M |
+| securestore | p6 | 24M / 8M |
+| atf | p7 | 32M / 2M |
+| baseparam | p8 | 34M / 8M |
+| pqparam | p9 | 42M / 8M |
+| dtbo | p10 | 50M / 2M |
+| logo | p11 | 52M / 10M |
+| logobak | p12 | 62M / 10M |
+| fastplay | p13 | 72M / 20M |
+| recoverybak | p14 | 92M / 20M |
+| ‌boot‌ | ‌p15‌ | ‌112M / 60M‌ |
+| misc | p16 | 172M / 20M |
+| trustedcore | p17 | 192M / 20M |
+| rootfs | p18 | 212M / 7.07G，已挂 / |
+
+boot 就是 /dev/mmcblk0p15（起始 229376 扇区即 112M、长度 122880 扇区正好 60M）
