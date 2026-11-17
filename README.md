@@ -118,6 +118,8 @@ sudo bash scripts/verify-device.sh
    单独提供一份 dtb，必要时写入 `/dev/mmcblk0p10`。
 3. **USB 音频驱动是模块**。这与 mv100 的 `kernel.config` 形态一致，所以刷完内核还必须
    解开 `modules.tar.gz`；`scripts/flash-boot.sh` 的顺序已经保证这一点。
+   要让它真以模块形态编出，CI 里那一行必须是 `scripts/config --module SND_USB_AUDIO`；
+   写成 `--enable`（对 tristate 等于设成 `y`）会把它编进内核，模块包里就没有它了。
 
 ---
 

@@ -198,7 +198,10 @@ jobs:
           scripts/config --enable SND_SOC_HISTB_AIAO_CARD
           # ★ 本仓库存在的理由：USB 声卡 / USB DAC
           scripts/config --enable SND_USB
-          scripts/config --enable SND_USB_AUDIO
+          # ★ 这里必须用 --module，不能用 --enable：--enable 对 tristate 符号等于设成 y，
+          #   会顶掉叠加层里的 =m，把 USB 音频编成内置，产物形态就不再是「内核 + 模块」，
+          #   逐行自检还会报「叠加层未生效：CONFIG_SND_USB_AUDIO=m」。SND_USB 是 bool，用 --enable 正确。
+          scripts/config --module SND_USB_AUDIO
           # 模块支持：作者那版是纯内置内核（/proc/modules 不存在）
           scripts/config --enable MODULES
           scripts/config --enable MODULE_UNLOAD
@@ -222,8 +225,12 @@ jobs:
           done
 
           # USB 音频是本仓库存在的理由，单独硬校验，形态与 mv100 一致（=m）
-          if grep -qE '^CONFIG_SND_USB_AUDIO=[ym]$' .config; then
+          if grep -qE '^CONFIG_SND_USB_AUDIO=m$' .config; then
             echo "OK   $(grep -E '^CONFIG_SND_USB_AUDIO=' .config)"
+          elif grep -qE '^CONFIG_SND_USB_AUDIO=y$' .config; then
+            echo "OK   $(grep -E '^CONFIG_SND_USB_AUDIO=' .config)（内置）"
+            echo "::warning::USB 音频被编成了内置（=y），modules.tar.gz 里不会有 snd-usb-audio.ko"
+            echo "::warning::要保持「内核 + 模块」形态，把本步骤里的 --enable SND_USB_AUDIO 改回 --module SND_USB_AUDIO"
           else
             echo "::error::CONFIG_SND_USB_AUDIO 未开启，USB 声卡会用不了"
             exit 1
@@ -257,10 +264,23 @@ jobs:
             case "$line" in
               CONFIG_CMDLINE=*) continue ;;
             esac
-            if ! grep -qxF "$line" .config; then
-              echo "::warning::叠加层未生效：$line"
-              MISS=$((MISS + 1))
-            fi
+            # tristate 符号的 m 可能被 select 提升为 y（属正常，不是丢项），
+            # 因此以 =m 结尾的行按 [ym] 判定，其余行仍逐字节严格比对。
+            case "$line" in
+              *=m)
+                key="${line%=m}"
+                if ! grep -qE "^${key}=[ym]$" .config; then
+                  echo "::warning::叠加层未生效：$line（期望 m，实际 $(grep -E "^${key}=" .config || echo 缺失)）"
+                  MISS=$((MISS + 1))
+                fi
+                ;;
+              *)
+                if ! grep -qxF "$line" .config; then
+                  echo "::warning::叠加层未生效：$line"
+                  MISS=$((MISS + 1))
+                fi
+                ;;
+            esac
           done < /tmp/board.want
           echo "叠加层未生效行数：$MISS"
           echo "=== 最终内核版本 ==="

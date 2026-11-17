@@ -65,6 +65,20 @@
 - 处理：叠加层与检查清单一律写 `CONFIG_OF=y`，本仓库已改。
 - 通用做法：改符号名前先在内核源码里 `grep -rn "config <符号名>"` 确认它还存在。
 
+### 7. 只有 `=m` 的 USB 音频项报「叠加层未生效」
+
+- 现象：末尾「单板配置层逐行自检」里只有 `CONFIG_SND_USB_AUDIO=m`（有时还带
+  `CONFIG_SND_HWDEP=m`、`CONFIG_SND_RAWMIDI=m`）报未生效，而最终 `.config` 里它们其实是 `=y`。
+- 原因：逐行自检按 `=m` 逐字节比对，而下面两种情况都属正常：
+  - `scripts/config --enable SND_USB_AUDIO` 对 tristate 符号是设成 `y`，会把叠加层里的
+    `=m` 顶掉。要保留模块形态必须改用 `--module`。
+  - `SND_HWDEP`、`SND_RAWMIDI` 是无 prompt 符号，取值只由 `select` 决定，`SND_USB_AUDIO`
+    是什么它们就是什么。
+- 处理：本仓库已把 CI 改成 `scripts/config --module SND_USB_AUDIO`，并让逐行自检对 `=m`
+  行按 `[ym]` 判定；叠加层里也不再写那两个 select 符号。
+  若希望 USB 音频编进内核（刷完不必装模块），把 CI 里那一行换回 `--enable` 即可，
+  代价是 `modules.tar.gz` 里不再有 `snd-usb-audio.ko`。
+
 ## 二、刷机阶段
 
 ### 1. 拒绝写入 boot 分区
