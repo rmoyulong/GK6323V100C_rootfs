@@ -48,6 +48,23 @@
 - 自查：看日志里「=== 单板配置层逐行自检 ===」一节有没有
   `::warning::叠加层未生效：CONFIG_xxx=y`；有就是同一类问题，那一行漏了父符号。
 
+### 5. 一列 `=m` 符号集体未生效：先查 `CONFIG_MODULES`
+
+- 现象：日志「期望项」一节里，所有形如 `=m` 的项（如 `CONFIG_SND_HWDEP=m`、
+  `CONFIG_SND_RAWMIDI=m`、`CONFIG_SND_USB_AUDIO=m`）集体报未生效，而 `=y` 的项全部 OK。
+- 原因：**内核没开模块支持**。tristate 符号在 `CONFIG_MODULES=n` 时会被 kconfig 一律
+  压成 n，写多少 `=m` 都不会生效；作者那版 BSP 内核正是 `CONFIG_MODULES=n` 的全内置内核。
+- 处理：`CONFIG_MODULES=y` 已列入「必须项」，漏开会在构建阶段直接中止，不必等到刷机后才发现。
+- 附带：`SND_USB_AUDIO` 会自动 `select SND_HWDEP`、`SND_RAWMIDI`，它自己生效后这两项随之而来。
+
+### 6. 旧符号名造成的假告警：`CONFIG_USE_OF`
+
+- 现象：日志里 `Warning: CONFIG_USE_OF 未生效`，但设备树相关驱动（时钟、pinctrl）都正常。
+- 原因：`CONFIG_USE_OF` 自 5.x 起已从 Kconfig 移除，统一为 `CONFIG_OF`；arm64 由架构强制
+  `select OF`，恒为 y。写旧名会被丢弃，逐行自检因此报「叠加层未生效」（假阳性）。
+- 处理：叠加层与检查清单一律写 `CONFIG_OF=y`，本仓库已改。
+- 通用做法：改符号名前先在内核源码里 `grep -rn "config <符号名>"` 确认它还存在。
+
 ## 二、刷机阶段
 
 ### 1. 拒绝写入 boot 分区

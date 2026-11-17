@@ -156,7 +156,7 @@ jobs:
           # 说明：$FRAGMENT 本身已包含下列全部项目，这里的 scripts/config
           # 只是防止叠加过程中丢项，符号名以内核 Kconfig 为准
           scripts/config --enable ARCH_HISI
-          scripts/config --enable USE_OF
+          scripts/config --enable OF
           # eMMC：(compatible = "hisilicon,hi3798cv200-dw-mshc")
           scripts/config --enable MMC
           scripts/config --enable MMC_BLOCK
@@ -230,7 +230,7 @@ jobs:
           fi
 
           echo "=== 期望项：没生效只告警（可能依赖未满足或被改名）==="
-          for s in USE_OF SERIAL_AMBA_PL011 \
+          for s in OF SERIAL_AMBA_PL011 \
                    MMC MMC_DW MMC_DW_PLTFM \
                    HISI_FESTA_PHY \
                    GENERIC_PHY USB_PHY \
