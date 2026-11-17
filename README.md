@@ -1,139 +1,122 @@
-# GK6323V100C 内核编译说明
-适用于刷了 histb Debian 固件的国科 GK6323V100C 盒子，补充 USB 声卡支持，输出产物与 `hi3798mv100` 仓库格式完全一致：**内置 DTB 的 uImage 内核 + 模块目录**。
+# GK6323V100C 主线内核：构建 + 刷写 + 实机验证
+
+面向国科微 GK6323V100C 机顶盒（硅片等同海思 Hi3798MV200H / MV310，ARM64）的内核仓库：
+在 GitHub Actions 上拉取源码、应用 histb 补丁，编译出可直接刷入的 `uImage` 与内核模块，
+刷写方式与输出格式同 hi3798mv100 那套仓库。
+
+**为什么有这个仓库**：作者那版 Debian 用的 BSP 内核（`6.18.46-gk6323-debian`）是纯内置内核
+（`/proc/modules` 不存在），并且没有编入 USB 音频驱动，插上 USB 声卡能被枚举、却没有驱动接管，
+出不了声。本仓库在 histb 主线上把 USB 音频打开，并把内核与模块一起产出。
 
 ---
 
-## 快速编译（在x86_64 Linux机器上执行）
-### 1. 安装交叉编译工具链
-```bash
-# Debian/Ubuntu
-sudo apt install gcc-aarch64-linux-gnu build-essential libncurses-dev bison flex libssl-dev libelf-dev bc u-boot-tools
+## 一、仓库结构
+
+```
+.
+├── .github/workflows/gk6323.yml   # 构建流水线：拉源码 → 打补丁 → 配置自检 → 编译 → 打包 → 发布 Release
+├── gk6323v100c.config             # 单板配置叠加层（USB 音频就是在这里打开的）
+├── apply_histb_patches.sh         # 补丁应用脚本（有 series 按 series，否则按文件名序号）
+├── scripts/
+│   ├── flash-boot.sh              # 目标机上刷写 boot 分区（可选写 dtbo）＋安装模块
+│   └── verify-device.sh           # 目标机上一条命令自检
+├── docs/
+│   ├── build-and-flash.md         # 从构建到刷写的完整步骤
+│   └── troubleshooting.md         # 踩过的坑与排查办法
+└── .gitignore
 ```
 
-### 2. 一键编译
-```bash
-chmod +x build.sh
-./build.sh
-```
-编译完成后，产物在 `output/` 目录下：
-- `boot.img`：带内置DTB的uImage内核，可直接替换原分区
-- `modules/`：完整内核模块目录，包含snd-usb-audio驱动
+三处触发路径固定为 `gk6323v100c.config`、`apply_histb_patches.sh`、`.github/workflows/gk6323.yml`，
+改动其中任一文件即自动触发构建，也可以在 Actions 页面手动触发。
 
 ---
 
-## 兼容当前Debian系统的优化方案（推荐）
-如果想最大程度兼容作者现有Debian系统的驱动（WiFi/蓝牙/硬件加速等），**不用重新从零配置**，直接从运行中的内核提取配置再补USB音频即可：
+## 二、与 hi3798mv100 的差别只有 5 处
 
-1. 在你已经刷好Debian的盒子上执行：
-```bash
-# 从运行内核提取配置
-zcat /proc/config.gz > /tmp/running.config
-# 拷贝到编译机
-scp /tmp/running.config user@编译机IP:/path/to/gk6323-kernel/
-```
-
-2. 替换build.sh中的配置生成步骤，直接用现有配置：
-```bash
-# 注释掉原来的defconfig和cat >> .config部分，换成：
-cp /path/to/running.config .config
-# 打开USB音频配置
-scripts/config --enable CONFIG_SOUND
-scripts/config --enable CONFIG_SND
-scripts/config --enable CONFIG_SND_USB_AUDIO
-scripts/config --module CONFIG_SND_USB_AUDIO
-scripts/config --enable CONFIG_SND_HRTIMER
-scripts/config --enable CONFIG_SND_SEQUENCER
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-```
-这样编译出来的内核和作者原内核**100%驱动兼容**，只多了USB声卡支持，不会出现网口/eMMC/WiFi失效的问题。
-
----
-
-## 刷入步骤（在盒子上执行）
-### 1. 先备份现有系统
-```bash
-# 备份原boot镜像
-dd if=/dev/mmcblk0p17 of=/root/boot.img.bak bs=1M conv=fsync
-# 备份原模块目录
-tar czf /root/modules.bak.tar.gz /lib/modules/
-```
-
-### 2. 替换内核
-```bash
-# 把新的boot.img传到盒子/root目录
-dd if=/root/boot.img of=/dev/mmcblk0p15 bs=1M conv=fsync
-sync
-```
-> 注意：分区号`mmcblk0p15`对应dtbo/boot分区，请先用`ls -l /dev/disk/by-partlabel/`确认你的boot分区号，作者Debian分区表通常boot在p15。
-
-### 3. 安装模块
-```bash
-# 把modules目录传到盒子
-cp -r modules/lib/modules/6.18.46* /lib/modules/
-depmod -a
-sync
-```
-
-### 4. 重启
-```bash
-reboot
-```
-
----
-
-## 验证USB声卡
-重启后插上USB声卡，执行：
-```bash
-lsusb
-cat /proc/asound/cards
-aplay -l
-```
-能看到USB声卡设备即成功，用`alsamixer`调整音量即可使用。
-
----
-
-## 配置项说明
-默认已开启的USB音频相关配置：
-- `CONFIG_SND_USB_AUDIO`：USB音频核心驱动（必须）
-- `CONFIG_SND_USB_AUDIO_USE_MEDIA_CONTROLLER`：媒体控制器支持
-- `CONFIG_USB_AUDIO_CLASS_1`：USB Audio Class 1.0兼容（老声卡）
-- `CONFIG_SND_SEQUENCER`：ALSA音序器支持（MIDI等）
-- `CONFIG_SND_HRTIMER`：高精度定时器（低延迟音频）
-
-常见USB声卡（USB DAC、USB麦克风、USB音箱）全部免驱支持，包括常见的CM108、CM6206、ES9018/ES9038 DAC、PS3/PS4 USB声卡等。
-
----
-
-## 注意事项
-1. 本内核基于主线6.18.46 + histb海思补丁，完全兼容Hi3798MV310/MV320/GK6323V100C
-2. 加载/入口地址与原作者内核完全一致：`0x2000000`，无压缩，DTB内置在Image末尾
-3. 如果开机卡住，用TTL看串口日志，大概率是DTB不匹配，换成对应你主板的DTB重新拼接即可
-4. 所有原厂底层分区（atf/bootargs/fastboot）都不改动，仅替换boot和modules，可随时回滚：
-   ```bash
-   dd if=/root/boot.img.bak of=/dev/mmcblk0p17 bs=1M conv=fsync
-   tar xzf /root/modules.bak.tar.gz -C /
-   reboot
-   ```
-
-| 分区 | 设备节点 | 起始/大小 |
+| 项目 | hi3798mv100 | 本仓库 |
 | --- | --- | --- |
-| fastboot | p1 | 0 / 1M |
-| bootargs | p2 | 1M / 512K |
-| bootargsbak | p3 | 1.5M / 512K |
-| recovery | p4 | 2M / 20M |
-| deviceinfo | p5 | 22M / 2M |
-| securestore | p6 | 24M / 8M |
-| atf | p7 | 32M / 2M |
-| baseparam | p8 | 34M / 8M |
-| pqparam | p9 | 42M / 8M |
-| dtbo | p10 | 50M / 2M |
-| logo | p11 | 52M / 10M |
-| logobak | p12 | 62M / 10M |
-| fastplay | p13 | 72M / 20M |
-| recoverybak | p14 | 92M / 20M |
-| ‌boot‌ | ‌p15‌ | ‌112M / 60M‌ |
-| misc | p16 | 172M / 20M |
-| trustedcore | p17 | 192M / 20M |
-| rootfs | p18 | 212M / 7.07G，已挂 / |
+| 架构与工具链 | `ARCH=arm`，`arm-linux-gnueabihf-` | `ARCH=arm64`，`aarch64-linux-gnu-` |
+| 内核镜像 | `zImage`，包成 `-A arm` 的 uImage | `Image`，包成 `-A arm64` 的 uImage |
+| 设备树 | 追加在 `zImage` 末尾 | 追加在 `Image` 末尾，另单独发一份供 dtbo 分区用 |
+| 单板配置 | `kernel.config` | `gk6323v100c.config`（叠加层），多一项 USB 音频 |
+| 刷写分区 | `boot = /dev/mmcblk0p6` | `boot = /dev/mmcblk0p15`（60M），`dtbo = /dev/mmcblk0p10` |
 
-boot 就是 /dev/mmcblk0p15（起始 229376 扇区即 112M、长度 122880 扇区正好 60M）
+其余（基线、补丁库、打包地址、产物形态、发布流程、刷写顺序）全部照搬。
+
+---
+
+## 三、快速开始
+
+### 1. 构建
+
+```bash
+git init -b main
+git add -A
+git commit -m "GK6323V100C kernel build"
+git remote add origin git@github.com:<你的账号>/<仓库名>.git
+git push -u origin main
+```
+
+- **Settings → Actions → General → Workflow permissions** 选 **Read and write permissions**
+  （发布 Release 需要写权限）。
+- Actions → **GK6323V100C 内核自动构建** → **Run workflow**。
+- 成功后产出 `boot.img`、`modules.tar.gz`、`Image`、设备树、`config-*`、`sha256sums.txt`，
+  并自动创建 Release，标签形如 `gk6323v100c-7.4-rc2-b<N>`。
+
+### 2. 刷入设备
+
+```bash
+# 把 Release 里的 boot.img 与 modules.tar.gz 传到盒子的 /tmp
+sudo bash scripts/flash-boot.sh -i /tmp/boot.img -m /tmp/modules.tar.gz
+sudo reboot
+```
+
+先解压模块、后写 boot 分区的顺序由脚本保证，不要手工颠倒。只想先看一遍动作加 `-n`。
+脚本只碰 boot 分区，不碰 fastboot、bootargs、atf、trustedcore 这些底层分区。
+
+### 3. 验证
+
+```bash
+sudo bash scripts/verify-device.sh
+```
+
+七组检查、末尾给出 `PASS / FAIL / SKIP` 汇总，全通过时退出码为 0。
+
+---
+
+## 四、关键约定
+
+| 项目 | 取值 | 说明 |
+| --- | --- | --- |
+| 内核基线 | `7.4-rc2` / commit `fd9230005e85` | 与 mv100 仓库同一 pin，也与补丁库 `baseline` 一致 |
+| 补丁库 | `histb-mainline_patches` | 严格应用，等价 `--fuzz=0`，冲突即回滚 |
+| 设备树 | `hi3798mv200h-skyworth-stb.dtb` | 补丁库新增的创维代工 mv200h 板级 |
+| uImage | 加载 / 入口 `0x02000000`，`-C none` | 设备树追加在 `Image` 末尾，校验魔数 `d00dfeed` |
+| USB 音频 | `CONFIG_SND_USB_AUDIO=m` | 与 mv100 的 `kernel.config` 同形态，是模块 |
+| 启动参数 | 内核内 `CONFIG_CMDLINE` 留空 | `root=` 与 `blkdevparts=` 由 bootargs 分区下发 |
+| boot 分区 | `/dev/mmcblk0p15` | 起始 112M、长 60M，刷入 `boot.img` |
+| dtbo 分区 | `/dev/mmcblk0p10` | 起始 50M、长 2M，需要时写入同一份 dtb |
+| 根分区 | `/dev/mmcblk0p18` | ext4，由 bootargs 中的 `root=` 指定 |
+
+升级内核版本时，只需把 `PATCHES_BASE_SHA` 与 `PATCHES_KERNEL_VERSION` 跟着补丁库
+`baseline` 一起改，其余步骤照跑。换成自己的补丁库 fork，改 `PATCHES_REPO` 即可。
+
+---
+
+## 五、三件必须知道的事
+
+1. **内核版本号会变**。本基线是 histb 主线，不是作者那版国科 BSP 内核，产出内核自报
+   `7.4.x`，不再是 `6.18.46-gk6323-debian`；模块相应落在 `/lib/modules/7.4.x`。
+   **内核与模块必须一起替换**，只换其中一个不会生效。
+2. **内嵌的设备树能否生效取决于引导器**。设备树已按 mv100 的做法追加在内核镜像末尾，
+   但 arm64 上是否需要额外从 dtbo 分区读取，各家引导器行为不同；所以 Release 里同时
+   单独提供一份 dtb，必要时写入 `/dev/mmcblk0p10`。
+3. **USB 音频驱动是模块**。这与 mv100 的 `kernel.config` 形态一致，所以刷完内核还必须
+   解开 `modules.tar.gz`；`scripts/flash-boot.sh` 的顺序已经保证这一点。
+
+---
+
+## 六、文档索引
+
+- [构建与刷写](docs/build-and-flash.md)
+- [故障排查](docs/troubleshooting.md)

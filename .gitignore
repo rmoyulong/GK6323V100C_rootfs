@@ -1,0 +1,16 @@
+# 构建过程产物
+linux_build/
+histb-patches/
+out/
+*.o
+*.a
+*.cmd
+*.order
+*.symvers
+
+# 本地试验留下的镜像与备份
+*.dtb
+Image
+Image-dtb
+boot.img
+modules.tar.gz
