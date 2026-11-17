@@ -166,20 +166,33 @@ jobs:
           # 控制台串口
           scripts/config --enable SERIAL_AMBA_PL011
           scripts/config --enable SERIAL_AMBA_PL011_CONSOLE
-          # 根文件系统
+          # 根文件系统（NLS 是 NLS_CODEPAGE_* 的父符号）
           scripts/config --enable EXT4_FS
+          scripts/config --enable NLS
           # 命令行分区表：本机 root= 与全部 18 个分区都由 bootargs 里的 blkdevparts= 下发
+          # ★ 必须先开父菜单 PARTITION_ADVANCED：CMDLINE_PARTITION 的 prompt 条件是
+          #   "if PARTITION_ADVANCED"，父项为 n 时它成了无 prompt 符号，这一行会被
+          #   olddefconfig 丢弃，构建随后停在「必须项」一节（本仓库踩过这个坑）
+          scripts/config --enable PARTITION_ADVANCED
+          scripts/config --enable MSDOS_PARTITION
           scripts/config --enable CMDLINE_PARTITION
-          # 板载百兆网口
+          # 板载百兆网口（★ 同样先开父菜单 NET_VENDOR_HISILICON，并带上 PHYLIB）
+          scripts/config --enable PHYLIB
+          scripts/config --enable NET_VENDOR_HISILICON
           scripts/config --enable HISI_FEMAC
           scripts/config --enable HISI_FESTA_PHY
           # USB 主控（本板设备树里 xhci 是注释掉的，只有 EHCI/OHCI）
+          # ★ PHY_HISI_INNO_USB2 的父符号
+          scripts/config --enable GENERIC_PHY
+          scripts/config --enable USB_PHY
           scripts/config --enable USB_EHCI_HCD
           scripts/config --enable USB_EHCI_HCD_PLATFORM
           scripts/config --enable USB_OHCI_HCD
           scripts/config --enable USB_OHCI_HCD_PLATFORM
           scripts/config --enable PHY_HISI_INNO_USB2
           scripts/config --enable USB_STORAGE
+          # ALSA 骨架补项
+          scripts/config --enable SND_TIMER
           # 板载音频（Histb AIAO，走 I2S / ES8316 那一路）
           scripts/config --enable SND_SOC_HISTB_AIAO_I2S
           scripts/config --enable SND_SOC_HISTB_AIAO_CARD
@@ -197,12 +210,13 @@ jobs:
           echo "=== 必须项：少一项这台机器就起不来或目标落空，直接中止 ==="
           for s in ARCH_HISI SERIAL_AMBA_PL011_CONSOLE \
                    MMC_BLOCK MMC_DW_HI3798CV200 \
-                   EXT4_FS CMDLINE_PARTITION \
+                   EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
+                   NET_VENDOR_HISILICON PHYLIB HISI_FEMAC \
                    USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
             else
-              echo "::error::CONFIG_$s 未开启"
+              echo "::error::CONFIG_$s 未开启 —— 若该符号被 if 包住，请先确认它的父菜单已开启（见 docs/troubleshooting.md 构建阶段第 4 条）"
               exit 1
             fi
           done
@@ -218,9 +232,11 @@ jobs:
           echo "=== 期望项：没生效只告警（可能依赖未满足或被改名）==="
           for s in USE_OF SERIAL_AMBA_PL011 \
                    MMC MMC_DW MMC_DW_PLTFM \
-                   HISI_FEMAC HISI_FESTA_PHY \
+                   HISI_FESTA_PHY \
+                   GENERIC_PHY USB_PHY \
                    USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
-                   SND SND_PCM SND_SOC SND_USB \
+                   SND SND_TIMER SND_PCM SND_SOC SND_USB SND_HWDEP SND_RAWMIDI \
+                   NLS NLS_UTF8 NLS_CODEPAGE_936 \
                    SND_SOC_HISTB_AIAO_I2S SND_SOC_HISTB_AIAO_CARD \
                    COMMON_CLK_HI3798MV200 PINCTRL_HISTB PINCTRL_HI3798MV2X; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then

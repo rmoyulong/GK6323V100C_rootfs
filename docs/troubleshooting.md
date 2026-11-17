@@ -28,11 +28,25 @@
 - 处理：把 `PATCHES_REPO` 换成包含该板级的补丁库（仓库内 `arch/arm64/boot/dts/hisilicon/`
   下应能看到 `hi3798mv200.dtsi` 与该单板 dts），并把 `PATCHES_BASE_SHA` 随之对齐。
 
-### 4. 配置自检报「未生效」
+### 4. 必须项检查中止：`Error: CONFIG_xxx 未开启`
 
-- 现象：某行变成 `::warning::叠加层未生效：CONFIG_xxx=y`。
-- 原因：符号名写错，或它的依赖没满足。
-- 处理：按告警里那一行改 `gk6323v100c.config`；属必须项的会直接中止，不会静默产出。
+- 现象：日志走到「必须项：少一项这台机器就起不来或目标落空，直接中止」一节后停下，
+  报某个符号未开启（本仓库第一版就倒在 `CONFIG_CMDLINE_PARTITION` 上）。
+- 原因：**该符号的父菜单没开**。`CMDLINE_PARTITION` 的 prompt 条件是
+  `if PARTITION_ADVANCED`，父项为 n 时它成了「无 prompt 符号」，写进 `.config` 的值会被
+  `olddefconfig` 丢弃 —— fragment 里写了、`scripts/config --enable` 也执行了，最终仍是不开。
+- 处理：把父符号写在子符号之前。本仓库已补齐这几对：
+
+| 子符号 | 必须同写的父符号 |
+| --- | --- |
+| `CMDLINE_PARTITION` | `PARTITION_ADVANCED` |
+| `HISI_FEMAC`、`HISI_FESTA_PHY` | `NET_VENDOR_HISILICON`、`PHYLIB` |
+| `PHY_HISI_INNO_USB2` | `GENERIC_PHY`、`USB_PHY` |
+| `NLS_CODEPAGE_*`、`NLS_UTF8` | `NLS` |
+| `SERIAL_AMBA_PL011_CONSOLE` | `SERIAL_AMBA_PL011` |
+
+- 自查：看日志里「=== 单板配置层逐行自检 ===」一节有没有
+  `::warning::叠加层未生效：CONFIG_xxx=y`；有就是同一类问题，那一行漏了父符号。
 
 ## 二、刷机阶段
 
