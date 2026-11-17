@@ -2,6 +2,9 @@ GK6323V100C
 
 boot.img: u-boot legacy uImage, GK6323V100C Linux 6.18.46 ARM64 \037 \003\325, Linux/ARM 64-bit, OS Kernel Image (Not compressed), 14028808 bytes, Sun Nov 15 13:25:05 2026, Load Address: 0X2000000, Entry Point: 0X2000000, Header CRC: 0X63DD1679, Data CRC: 0XA6BE046B
 
+目标：
+就按 hi3798mv100 仓库的标准输出做：‌带内置 DTB 的 uImage 内核 + 完整模块目录‌，只补 USB 声卡支持，其他驱动完全对齐作者现有内核保证兼容性。
+========================================================================
 
 恢复安卓ttl刷机：
 万能包-国科微GK6323-安卓9-TTL-烧录固件包_兼容三网遥控及有无wifi主板.zip
