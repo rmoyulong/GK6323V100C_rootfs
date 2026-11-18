@@ -127,7 +127,51 @@ jobs:
           EOF
           echo "----- 99-lms-network.conf -----"
           cat "$ROOTFS_DIR/etc/sysctl.d/99-lms-network.conf"
-
+          
+          #################建立启动后运行一次的脚本-开始################################################
+          sudo mkdir -p "$ROOTFS_DIR/systemd/system"
+          sudo tee "$ROOTFS_DIR/etc/systemd/system/resize-once.service" > /dev/null <<'EOF'
+          [Unit]
+          Description=One-time resize script
+          After=multi-user.target
+          ConditionPathExists=/etc/resize.sh
+          
+          [Service]
+          Type=oneshot
+          ExecStart=/etc/resize.sh
+          RemainAfterExit=no
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          sudo tee "$ROOTFS_DIR/etc/resize.sh" > /dev/null <<'EOF
+          #!/bin/bash
+          set -euo pipefail
+          
+          # ===== 你的 resize 逻辑写在这里 =====
+          chown root:root /etc/sudo.conf /etc/sudoers
+          chown -R root:root /etc/sudoers.d            
+          chown root:root /usr/bin/sudo
+          chmod 4755 /usr/bin/sudo
+            
+          resize2fs /dev/mmcblk0p18
+            
+          sudo chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
+          sudo chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
+          sudo chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
+            
+          sudo systemctl restart  lyrionmusicserver
+          # ===================================
+          
+          # 执行完毕后自毁：禁用并删除服务、删除脚本自身
+          systemctl disable resize-once.service 2>/dev/null || true
+          rm -f /etc/systemd/system/resize-once.service
+          rm -f /etc/resize.sh
+          systemctl daemon-reload
+          EOF
+          #################建立启动后运行一次的脚本-结束################################################
+          
           sudo mkdir -p "$ROOTFS_DIR/etc/update-motd.d"
           sudo cp ${{ github.workspace }}/patch/cats_banner $ROOTFS_DIR/etc/cats_banner
           sudo tee "$ROOTFS_DIR/etc/update-motd.d/40-cats_banner" > /dev/null <<'EOF'
@@ -136,11 +180,11 @@ jobs:
           cat /etc/cats_banner
           EOF
           sudo chmod +x $ROOTFS_DIR/etc/update-motd.d/40-cats_banner
-
+          
           # 修改为中国时间
           sudo rm -rf $ROOTFS_DIR/etc/localtime
           sudo ln -s /usr/share/zoneinfo/Asia/Shanghai $ROOTFS_DIR/etc/localtime
-
+          
           # 修正为中文环境
           sudo mkdir -p "$ROOTFS_DIR/etc/default"
           sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/default/locale.conf
@@ -210,6 +254,10 @@ jobs:
           mkdir -p /var/lib/squeezeboxserver/prefs
           mkdir -p /var/lib/squeezeboxserver/cache
           mkdir -p /var/log/squeezeboxserver
+          
+          sudo chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
+          sudo chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
+          sudo chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
 
           dpkg -i ./golang/lms_arm.deb || true
           apt-get --fix-broken install -y
@@ -247,6 +295,9 @@ jobs:
           sudo chroot "$ROOTFS_DIR" systemctl enable squeezelite || true
           sudo chroot "$ROOTFS_DIR" systemctl enable smbd || true
           sudo chroot "$ROOTFS_DIR" systemctl enable wsdd2 || true
+          
+          sudo chmod +x "$ROOTFS_DIR/etc/resize.sh"
+          sudo chroot "$ROOTFS_DIR" systemctl enable resize-once.service || true
 
           sudo chroot "$ROOTFS_DIR" netplan generate || true
 
