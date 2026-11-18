@@ -117,8 +117,12 @@ jobs:
             echo "(补丁库没有 baseline 文件，沿用 workflow 里的兜底值)"
           fi
 
-          # 兼容 "KERNEL_VERSION = x" / "KERNEL_VERSION=x" / "# KERNEL_VERSION = x" 三种写法
-          get() { sed -n "s/^[#[:space:]]*$1[[:space:]]*=[[:space:]]*//p" baseline 2>/dev/null | head -1 | tr -d '[:space:]'; }
+          # 兼容四种写法：KEY = v / KEY=v / "# KEY = v" / KEY := v
+          #   ★ 补丁库 rc3 起用的是 "KERNEL_VERSION := 7.4-rc3"（make 写法）。
+          #     只认 "=" 的正则在它上面取到空串 → 静默回落到本文件底部的兜底值，
+          #     「自动读基线」于是形同失效，库里换版本也不会跟着动。
+          #   ★ 末尾 || true：baseline 不存在时 sed 返回非零，否则 set -e 直接杀步骤。
+          get() { sed -n "s/^[#[:space:]]*$1[[:space:]]*:*=[[:space:]]*//p" baseline 2>/dev/null | head -1 | tr -d '[:space:]' || true; }
           KV="$(get KERNEL_VERSION)"; SHA="$(get BASE_SHA)"
           [ -n "$KV" ]  || KV="$PATCHES_KERNEL_VERSION"
           [ -n "$SHA" ] || SHA="$PATCHES_BASE_SHA"
@@ -279,11 +283,22 @@ jobs:
             exit 1
           fi
 
+          # 统一的安全取值：grep 无命中时给空串，且不返回非零
+          #   ★ 本步骤开着 set -euo pipefail。写成
+          #       CUR="$(grep … | head -1)"
+          #     时，若该符号在 .config 里「一行都没有」，grep 返回 1，pipefail 把整条
+          #     管道带成非零，这个赋值命令就失败 —— set -e 立刻杀掉整个步骤：不打
+          #     警告、不打诊断，日志里只剩 "Process completed with exit code 1"。
+          #     这正是 2026-11-18 那次构建停在「期望项」第 7 项（HISI_FESTA_PHY）且
+          #     全无输出的原因。凡是从 .config 取一行，一律走 lookup()。
+          lookup() { grep -E "$1" .config 2>/dev/null | head -1 || true; }
+          kdef()   { grep -rn -A8 "^config $1\$" --include='Kconfig*' . 2>/dev/null | head -12 || true; }
+
           # 报「未生效」时，把该符号在本次内核树里的 Kconfig 定义打出来：
           # 一眼能看出是被 if 包住（父项没开）、依赖未满足，还是被改名/删除。
           show_kconfig() {
             local sym="$1" blk
-            blk="$(grep -rn -A8 "^config ${sym}\$" --include='Kconfig*' . 2>/dev/null | head -12)"
+            blk="$(kdef "$sym")"
             if [ -n "$blk" ]; then
               echo "  └─ Kconfig 定义："
               printf '%s\n' "$blk" | sed 's/^/     /'
@@ -295,7 +310,7 @@ jobs:
           echo "=== 期望项：没生效只告警（可能依赖未满足或被改名）==="
           for s in OF SERIAL_AMBA_PL011 \
                    MMC MMC_DW \
-                   OF_MDIO MDIO_HISI_FEMAC HISI_FESTA_PHY \
+                   OF_MDIO MDIO_HISI_FEMAC \
                    GENERIC_PHY USB_PHY \
                    USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
                    I2C_HIX5HD2 GPIO_PL061 SPI_PL022 RTC_DRV_PCF8563 ARM_SP805_WATCHDOG \
@@ -305,15 +320,35 @@ jobs:
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
             else
-              CUR="$(grep -E "^(CONFIG_${s}=|# CONFIG_${s} is not set)" .config | head -1)"
-              echo "::warning::CONFIG_$s 未生效（当前值：${CUR:-不在 .config 中}）"
+              CUR="$(lookup "^(CONFIG_${s}=|# CONFIG_${s} is not set)")"
+              if [ -z "$CUR" ]; then
+                echo "::warning::CONFIG_$s 在 .config 里一行都没有 —— 该符号不在本次内核树中（补丁未提供／已被改名／已随补丁库版本移除），写在叠加层也无处落地"
+              else
+                echo "::warning::CONFIG_$s 未生效（当前值：$CUR）"
+              fi
+              show_kconfig "$s"
+            fi
+          done
+
+          echo "=== 已移除符号报告（补丁库 rc3 起不再提供，仅报告不判失败）==="
+          # HISI_FESTA_PHY：旧补丁库由 pending-7.4/210-01 提供该 PHY 驱动，
+          #   rc3 版重构清单后，整库 126 个补丁里已无一提及 Festa PHY。
+          #   因此它在 7.4-rc3 内核树里不存在，叠加层写它必然被 olddefconfig 丢弃。
+          #   本板网口的 PHY 只能另想办法（hisilicon,hisi-femac-v2 自带或固定链路），
+          #   留待网口阶段处理；这里只报告，不判失败。
+          for s in HISI_FESTA_PHY; do
+            CUR="$(lookup "^(CONFIG_${s}=|# CONFIG_${s} is not set)")"
+            if [ -n "$CUR" ]; then
+              echo "    $s：$CUR"
+            else
+              echo "    $s：不在 .config 中 —— 内核树无此符号"
               show_kconfig "$s"
             fi
           done
 
           echo "=== 派生符号报告（无 prompt / 由 select 决定，写进叠加层也无效，仅报告不判失败）==="
           for s in ARM_GIC_V3 ARM_GIC_V3_ITS SND_PCM SND_TIMER SND_HWDEP SND_RAWMIDI SND_SOC MDIO_DEVICE; do
-            V="$(grep -E "^(CONFIG_${s}=|# CONFIG_${s} is not set)" .config | head -1)"
+            V="$(lookup "^(CONFIG_${s}=|# CONFIG_${s} is not set)")"
             printf '    %-22s %s\n' "$s" "${V:-（不在 .config 中）}"
           done
 
@@ -338,15 +373,19 @@ jobs:
               *=m)
                 key="${line%=m}"
                 if ! grep -qE "^${key}=[ym]$" .config; then
-                  echo "::warning::叠加层未生效：$line（期望 m，实际 $(grep -E "^${key}=" .config | head -1)）"
+                  echo "::warning::叠加层未生效：$line（期望 m，实际 $(lookup "^${key}=")）"
                   show_kconfig "$sym"
                   MISS=$((MISS + 1))
                 fi
                 ;;
               *)
                 if ! grep -qxF "$line" .config; then
-                  CUR="$(grep -E "^(CONFIG_${sym}=|# CONFIG_${sym} is not set)" .config | head -1)"
-                  echo "::warning::叠加层未生效：$line（当前值：${CUR:-不在 .config 中}）"
+                  CUR="$(lookup "^(CONFIG_${sym}=|# CONFIG_${sym} is not set)")"
+                  if [ -z "$CUR" ]; then
+                    echo "::warning::叠加层未生效：$line（该符号在 .config 里一行都没有 —— 不在本次内核树中）"
+                  else
+                    echo "::warning::叠加层未生效：$line（当前值：$CUR）"
+                  fi
                   show_kconfig "$sym"
                   MISS=$((MISS + 1))
                 fi
@@ -375,7 +414,8 @@ jobs:
           mkdir -p "$(dirname "$OUT")"
           # 优先用内核树自带的 dtc（与内核同源），没有则用系统 dtc
           DTC="linux_build/scripts/dtc/dtc"
-          [ -x "$DTC" ] || DTC="$(command -v dtc)"
+          [ -x "$DTC" ] || DTC="$(command -v dtc || true)"
+          [ -n "$DTC" ] || { echo "::error::找不到 dtc（内核树与系统里都没有）"; exit 1; }
           echo "使用 dtc：$DTC"
           "$DTC" -@ -I dts -O dtb -o "$OUT" "$BOARD_DTS"
           echo "=== 反编译回读关键项，确认编译结果与真机一致 ==="
