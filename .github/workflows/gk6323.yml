@@ -568,7 +568,6 @@ jobs:
         run: |
           set -euo pipefail
           KREL="$PATCHES_KERNEL_VERSION"
-          mkdir -p linux_build
           cat > linux_build/RELEASE_NOTES.md <<-EOF
           # GK6323V100C 内核 ${KREL}
 
