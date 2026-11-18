@@ -518,14 +518,23 @@ jobs:
           # 内核解析设备树失败 → 表现为开机红灯循环。所以每轮都打印，不靠猜。
           DTS_SZ=$(stat -c%s "$BOARD_DTS")
           DTB_SZ=$(stat -c%s "$OUT")
-          echo "=== 设备树体积诊断 ==="
+          # 按 dtb 头结构拆分：魔数(4)+totalsize(4)+off_dt_struct(4)+off_dt_strings(4)+off_mem_rsvmap(4)+version(4)+last_comp_version(4)+boot_cpuid_phys(4)+size_dt_strings(4)+size_dt_struct(4) = 40 字节头
+          STRUCT_OFF=$(od -A n -t u4 -j 8 -N 4 "$OUT" | tr -d ' \n\t')
+          STRUCT_SIZE=$(od -A n -t u4 -j 36 -N 4 "$OUT" | tr -d ' \n\t')
+          STRINGS_OFF=$(od -A n -t u4 -j 12 -N 4 "$OUT" | tr -d ' \n\t')
+          STRINGS_SIZE=$(od -A n -t u4 -j 32 -N 4 "$OUT" | tr -d ' \n\t')
+          RESERVE_SIZE=$((STRUCT_OFF - 40))
+          echo "=== 设备树体积诊断（全部为动态实测值） ==="
           echo "dts 源文件      ：$DTS_SZ 字节"
           echo "编出的 dtb      ：$DTB_SZ 字节 = $((DTB_SZ/1024)) KiB"
+          echo "  ├─ FDT 头       : 40 字节"
+          echo "  ├─ 保留内存表   : $RESERVE_SIZE 字节"
+          echo "  ├─ 结构块       : $STRUCT_SIZE 字节"
+          echo "  └─ 字符串块     : $STRINGS_SIZE 字节"
           echo "引导器读取窗口  ：16384 字节（bootcmd: mmc read 0 0x03FFC000 0x19000 0x20）"
-          echo "窗口占用        ：$((DTB_SZ * 100 / 16384))%"
+          echo "窗口占用        ：$((DTB_SZ * 100 / 16384))%（剩余 $((16384 - DTB_SZ)) 字节余量）"
           echo "参照：作者那版 dtbo 里的 dtb 是 9156 字节"
-          echo "节点数（按 dts 源粗计）：$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_@,.-]*[[:space:]]*\{' "$BOARD_DTS")"
-          echo "本地核算参照：本次精简后的 dts 约 3800 字节；上一版未精简的约 7100 字节"
+          echo "节点数（按 dts 源统计）：$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_@,.-]*[[:space:]]*\{' "$BOARD_DTS")"
 
       - name: 追加设备树并打包 uImage
         run: |
