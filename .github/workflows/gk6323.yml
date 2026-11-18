@@ -438,7 +438,7 @@ jobs:
           files: |
             linux_build/out/boot.img
             linux_build/out/Image
-            linux_build/out/$TARGET_DTB
+            linux_build/out/*.dtb
             linux_build/out/config-*
             linux_build/out/modules.tar.gz
             linux_build/out/sha256sums.txt
