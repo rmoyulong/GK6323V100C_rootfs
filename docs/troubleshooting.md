@@ -16,8 +16,10 @@
   `CONFIG_PARTITION_ADVANCED=y` 在前、`CONFIG_CMDLINE_PARTITION=y` 在后。
   本仓库已按此顺序写好。被 `if` 包住的符号都遵循这条：
   `HISI_FEMAC`/`HISI_FESTA_PHY` 在 `NET_VENDOR_HISILICON` 之下、
+  `MDIO_HISI_FEMAC` 在 `OF_MDIO` 之下、
   `NLS_CODEPAGE_*` 在 `NLS` 之下、`PHY_HISI_INNO_USB2` 在
   `GENERIC_PHY`/`USB_PHY` 之下。
+  另有一类**无 prompt 符号**不适用本条（父项开了也设不动），见第 8 条。
 
 ### 2. `叠加层未生效：CONFIG_SND_USB_AUDIO=m`
 
@@ -63,6 +65,42 @@
 - 处理：确认 `CONFIG_DEBUG_INFO_NONE=y`（关调试符号）；不要临时打开
   其他大体积调试选项。
 
+### 8. `叠加层未生效：CONFIG_ARM_GIC_V3_ITS=n` / `CONFIG_SND_PCM=y` / `CONFIG_SND_TIMER=y`
+
+- 现象：逐行自检报这三条未生效，而它们的实际值是 `y` 或 `m`，与写的不同。
+- 原因：它们都是**无 prompt 符号** —— Kconfig 里只有 `config X`，没有提示
+  字符串，取值只由 `default` / `select` 决定。fragment 与 `scripts/config`
+  都改不动它，**写了必然被 `olddefconfig` 重算**，这条告警属误报。
+- 处理：从 `gk6323v100c.config` 里删掉（v6 已删）。想知道它们实际是什么，
+  看构建日志里「派生符号报告」一节，该节列出 `ARM_GIC_V3`、
+  `ARM_GIC_V3_ITS`、`SND_PCM`、`SND_TIMER`、`SND_HWDEP`、`SND_RAWMIDI`、
+  `SND_SOC`、`MDIO_DEVICE` 的真实取值。
+- 本地判断办法：`grep -rn -A6 "^config SND_PCM$" --include='Kconfig*' .`
+  —— 若输出里没有引号包着的提示字符串，就是无 prompt 符号。
+
+### 9. `CONFIG_HISI_FESTA_PHY` 未生效
+
+- 现象：期望项与逐行自检都报它未生效。
+- 原因：三种可能 —— ①被 `if` 包住而父菜单没开；②依赖未满足；③补丁库更新
+  后它被改名或删除。自检现在会自动打印该符号在本次内核树里的 Kconfig 定义，
+  看 `depends on` 一行即可区分。
+- 处理：
+  1. 若打印出 `depends on ...`，按依赖补父项符号（`PHYLIB`、
+     `NET_VENDOR_HISILICON`、`OF_MDIO` 等）；
+  2. 若打印「找不到该符号的 Kconfig 定义」，说明它被改名了 —— 按补丁库最新
+     的 `drivers/net/phy/Kconfig` 或 `drivers/net/mdio/Kconfig` 里的实际
+     符号名，改 `gk6323v100c.config` 与 workflow；
+  3. 网口相关的三项要一起在：`HISI_FEMAC`（MAC）、`MDIO_HISI_FEMAC`
+     （MDIO 总线，对应设备树 `mdio@f9c31100`）、`HISI_FESTA_PHY`（PHY）。
+- 注意：网口不影响内核启动，这一条只决定「网口能不能通」。
+
+### 10. 补丁库更新后报 `版本不匹配`
+
+- 现象：`版本不匹配：期望 7.4-rcX，实际 ...`。
+- 原因：补丁库 `baseline` 里的 `KERNEL_VERSION` 与 `BASE_SHA` 必须配套。
+- 处理：流水线现在**自动读补丁库的 `baseline`**，正常情况不必手工改
+  workflow；若仍报不匹配，说明补丁库这两个值自身不配套，找补丁库作者确认。
+
 ---
 
 ## 二、刷写与启动阶段
@@ -106,11 +144,13 @@
 
 ### 4. 上不了网
 
-- 检查：`ip link` 有没有 `eth0`；`dmesg | grep -i femac`。
-- 原因：板载网口是 `hisilicon,hisi-femac-v2`，依赖 `NET_VENDOR_HISILICON`
-  与 `PHYLIB`。若配置里父菜单没开，驱动会被丢弃。
-- 处理：确认配置里 `NET_VENDOR_HISILICON=y`、`PHYLIB=y`、
-  `HISI_FEMAC=y`、`HISI_FESTA_PHY=y` 都在。
+- 检查：`ip link` 有没有 `eth0`；`dmesg | grep -iE "femac|mdio|phy"`。
+- 原因：板载网口要三样齐 —— MAC（`HISI_FEMAC`）、MDIO 总线
+  （`MDIO_HISI_FEMAC`，对应设备树 `mdio@f9c31100`）、PHY
+  （`HISI_FESTA_PHY`），分别依赖 `NET_VENDOR_HISILICON`/`PHYLIB`、`OF_MDIO`。
+  少 MDIO 总线时的现象很有特色：`eth0` 存在，但始终没有 link。
+- 处理：确认 `NET_VENDOR_HISILICON=y`、`PHYLIB=y`、`OF_MDIO=y`、
+  `HISI_FEMAC=y`、`MDIO_HISI_FEMAC=y`、`HISI_FESTA_PHY=y` 都在。
 
 ### 5. 设备树 model 不对
 

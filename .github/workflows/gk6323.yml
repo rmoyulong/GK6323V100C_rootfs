@@ -18,6 +18,8 @@ name: GK6323V100C 内核自动构建
 # 基线（与 mv100 仓库逐字一致）：
 #   KERNEL_VERSION = 7.4-rc3
 #   BASE_SHA       = 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
+# 注意：下面 env 里的两个值是**兜底值**。流水线会先拉补丁库、读它自己的
+# baseline 文件，以库里的值为准 —— 补丁库更新后不必再改本文件。
 #
 # 三点必须知道的事（详见 README）：
 #   a) 这台不是海思 MV200H。真机实测为 4×Cortex-A55 + GICv3 +
@@ -54,7 +56,7 @@ jobs:
       KERNEL_REPO: https://github.com/torvalds/linux.git
       # 补丁仓库（与 hi3798mv100 用同一个库；本机只取其 i2c/femac 等共用 IP 修正）
       PATCHES_REPO: https://github.com/rmoyulong/histb-mainline_patches
-      # 与补丁库 baseline 逐字一致
+      # 兜底值；会被补丁库 baseline 文件里的实际值覆盖（见「拉取补丁仓库并读取基线」）
       PATCHES_BASE_SHA: 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
       PATCHES_KERNEL_VERSION: 7.4-rc3
       # uImage 头内地址，与实机 boot.img 实测一致
@@ -102,32 +104,31 @@ jobs:
           aarch64-linux-gnu-gcc --version | sed -n '1p'
           dtc --version
 
-      - name: 拉取内核源码（匹配补丁基线 commit）
-        run: |
-          set -euo pipefail
-          echo "拉取内核基线：$PATCHES_KERNEL_VERSION (commit: $PATCHES_BASE_SHA)"
-          git clone --filter=blob:none --no-checkout "$KERNEL_REPO" linux_build
-          cd linux_build
-          git checkout -q "$PATCHES_BASE_SHA"
-
-          # 规范化：7.4.0-rc2 -> 7.4-rc2，使两种写法等价
-          norm() { printf '%s' "$1" | sed -E 's/^([0-9]+\.[0-9]+)\.0/\1/'; }
-          ACT="$(make -s kernelversion)"
-          EXP="$PATCHES_KERNEL_VERSION"
-          echo "实际内核版本：$ACT ；baseline 期望：$EXP"
-          if [ "$(norm "$ACT")" != "$(norm "$EXP")" ]; then
-            echo "::error::版本不匹配：期望 $EXP，实际 $ACT"
-            exit 1
-          fi
-          echo "版本校验通过：$ACT"
-
-      - name: 拉取补丁仓库
+      - name: 拉取补丁仓库并读取基线
         run: |
           set -euo pipefail
           git clone --depth 1 "$PATCHES_REPO" histb-patches
           cd histb-patches
-          echo "=== 补丁库 baseline ==="
-          grep -E 'KERNEL_VERSION|BASE_SHA' baseline || true
+
+          echo "=== 补丁库 baseline 原文 ==="
+          if [ -f baseline ]; then
+            cat baseline
+          else
+            echo "(补丁库没有 baseline 文件，沿用 workflow 里的兜底值)"
+          fi
+
+          # 兼容 "KERNEL_VERSION = x" / "KERNEL_VERSION=x" / "# KERNEL_VERSION = x" 三种写法
+          get() { sed -n "s/^[#[:space:]]*$1[[:space:]]*=[[:space:]]*//p" baseline 2>/dev/null | head -1 | tr -d '[:space:]'; }
+          KV="$(get KERNEL_VERSION)"; SHA="$(get BASE_SHA)"
+          [ -n "$KV" ]  || KV="$PATCHES_KERNEL_VERSION"
+          [ -n "$SHA" ] || SHA="$PATCHES_BASE_SHA"
+
+          echo "=== 本次采用的基线 ==="
+          echo "KERNEL_VERSION = $KV"
+          echo "BASE_SHA       = $SHA"
+          echo "PATCHES_KERNEL_VERSION=$KV" >> "$GITHUB_ENV"
+          echo "PATCHES_BASE_SHA=$SHA"      >> "$GITHUB_ENV"
+
           echo "=== 补丁库布局检查（series 或根目录平铺两种都支持）==="
           mapfile -t patches < <(find . -name '*.patch' -type f | LC_ALL=C sort -V)
           echo "补丁总数：${#patches[@]}"
@@ -140,6 +141,25 @@ jobs:
           else
             echo "无 series，脚本将按文件名序号排序应用"
           fi
+
+      - name: 拉取内核源码（基线 commit 取自补丁库 baseline）
+        run: |
+          set -euo pipefail
+          echo "拉取内核基线：$PATCHES_KERNEL_VERSION (commit: $PATCHES_BASE_SHA)"
+          git clone --filter=blob:none --no-checkout "$KERNEL_REPO" linux_build
+          cd linux_build
+          git checkout -q "$PATCHES_BASE_SHA"
+
+          # 规范化：7.4.0-rc3 -> 7.4-rc3，使两种写法等价
+          norm() { printf '%s' "$1" | sed -E 's/^([0-9]+\.[0-9]+)\.0/\1/'; }
+          ACT="$(make -s kernelversion)"
+          EXP="$PATCHES_KERNEL_VERSION"
+          echo "实际内核版本：$ACT ；baseline 期望：$EXP"
+          if [ "$(norm "$ACT")" != "$(norm "$EXP")" ]; then
+            echo "::error::版本不匹配：期望 $EXP，实际 $ACT —— 请核对补丁库 baseline 里的 BASE_SHA 是否与 KERNEL_VERSION 配套"
+            exit 1
+          fi
+          echo "版本校验通过：$ACT"
 
       - name: 应用 histb 补丁（调用仓库根目录 apply_histb_patches.sh）
         run: |
@@ -189,8 +209,10 @@ jobs:
           scripts/config --enable CMDLINE_PARTITION
           # 板载百兆网口（★ 同样先开父菜单 NET_VENDOR_HISILICON，并带上 PHYLIB）
           scripts/config --enable PHYLIB
+          scripts/config --enable OF_MDIO
           scripts/config --enable NET_VENDOR_HISILICON
           scripts/config --enable HISI_FEMAC
+          scripts/config --enable MDIO_HISI_FEMAC
           scripts/config --enable HISI_FESTA_PHY
           # I2C / GPIO / SPI / RTC / 看门狗 / 帧缓冲
           scripts/config --enable I2C
@@ -215,8 +237,8 @@ jobs:
           scripts/config --enable USB_OHCI_HCD_PLATFORM
           scripts/config --enable PHY_HISI_INNO_USB2
           scripts/config --enable USB_STORAGE
-          # ALSA 骨架补项
-          scripts/config --enable SND_TIMER
+          # ALSA 骨架：SND_PCM / SND_TIMER 是**无 prompt 符号**，取值只由 select 决定，
+          # 在这里 --enable 也会被 olddefconfig 重算，故不写（见 gk6323v100c.config 附录）。
           # ★ 本仓库存在的理由：USB 声卡 / USB DAC
           scripts/config --enable SND_USB
           # ★ 这里必须用 --module，不能用 --enable：--enable 对 tristate 符号等于设成 y，
@@ -257,47 +279,75 @@ jobs:
             exit 1
           fi
 
+          # 报「未生效」时，把该符号在本次内核树里的 Kconfig 定义打出来：
+          # 一眼能看出是被 if 包住（父项没开）、依赖未满足，还是被改名/删除。
+          show_kconfig() {
+            local sym="$1" blk
+            blk="$(grep -rn -A8 "^config ${sym}\$" --include='Kconfig*' . 2>/dev/null | head -12)"
+            if [ -n "$blk" ]; then
+              echo "  └─ Kconfig 定义："
+              printf '%s\n' "$blk" | sed 's/^/     /'
+            else
+              echo "  └─ 本次内核树里找不到该符号的 Kconfig 定义 —— 很可能被改名或删除了"
+            fi
+          }
+
           echo "=== 期望项：没生效只告警（可能依赖未满足或被改名）==="
           for s in OF SERIAL_AMBA_PL011 \
                    MMC MMC_DW \
-                   HISI_FESTA_PHY \
+                   OF_MDIO MDIO_HISI_FEMAC HISI_FESTA_PHY \
                    GENERIC_PHY USB_PHY \
                    USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
                    I2C_HIX5HD2 GPIO_PL061 SPI_PL022 RTC_DRV_PCF8563 ARM_SP805_WATCHDOG \
                    FB_SIMPLE \
-                   SND SND_TIMER SND_PCM SND_USB SND_HWDEP SND_RAWMIDI \
+                   SND SND_USB \
                    NLS NLS_UTF8 NLS_CODEPAGE_936; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
             else
-              echo "::warning::CONFIG_$s 未生效，请核对符号名或依赖"
+              CUR="$(grep -E "^(CONFIG_${s}=|# CONFIG_${s} is not set)" .config | head -1)"
+              echo "::warning::CONFIG_$s 未生效（当前值：${CUR:-不在 .config 中}）"
+              show_kconfig "$s"
             fi
           done
+
+          echo "=== 派生符号报告（无 prompt / 由 select 决定，写进叠加层也无效，仅报告不判失败）==="
+          for s in ARM_GIC_V3 ARM_GIC_V3_ITS SND_PCM SND_TIMER SND_HWDEP SND_RAWMIDI SND_SOC MDIO_DEVICE; do
+            V="$(grep -E "^(CONFIG_${s}=|# CONFIG_${s} is not set)" .config | head -1)"
+            printf '    %-22s %s\n' "$s" "${V:-（不在 .config 中）}"
+          done
+
           if ! grep -qE '^CONFIG_CMDLINE=""$' .config; then
             echo "::error::CONFIG_CMDLINE 不是空串，启动参数应与 bootargs 分区一致"
             exit 1
           fi
 
           echo "=== 单板配置层逐行自检（未生效的逐条列出）==="
+          # 本文件只应出现「有 prompt 的符号」；无 prompt 符号（SND_PCM、SND_TIMER、
+          # ARM_GIC_V3_ITS 等）写了必然被 olddefconfig 重算，已从本文件移除。
           grep '^CONFIG_' "../$FRAGMENT" > /tmp/board.want
           MISS=0
           while read -r line; do
             case "$line" in
               CONFIG_CMDLINE=*) continue ;;
             esac
+            sym="${line%%=*}"; sym="${sym#CONFIG_}"
             # tristate 符号的 m 可能被 select 提升为 y（属正常，不是丢项），
             # 因此以 =m 结尾的行按 [ym] 判定，其余行仍逐字节严格比对。
             case "$line" in
               *=m)
                 key="${line%=m}"
                 if ! grep -qE "^${key}=[ym]$" .config; then
-                  echo "::warning::叠加层未生效：$line（期望 m，实际 $(grep -E "^${key}=" .config || echo 缺失)）"
+                  echo "::warning::叠加层未生效：$line（期望 m，实际 $(grep -E "^${key}=" .config | head -1)）"
+                  show_kconfig "$sym"
                   MISS=$((MISS + 1))
                 fi
                 ;;
               *)
                 if ! grep -qxF "$line" .config; then
-                  echo "::warning::叠加层未生效：$line"
+                  CUR="$(grep -E "^(CONFIG_${sym}=|# CONFIG_${sym} is not set)" .config | head -1)"
+                  echo "::warning::叠加层未生效：$line（当前值：${CUR:-不在 .config 中}）"
+                  show_kconfig "$sym"
                   MISS=$((MISS + 1))
                 fi
                 ;;
