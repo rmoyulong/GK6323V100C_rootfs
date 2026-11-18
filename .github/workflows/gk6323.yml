@@ -656,12 +656,66 @@ jobs:
         run: |
           set -euo pipefail
           cd linux_build/out
+          TAG="gk6323v100c-${PATCHES_KERNEL_VERSION}-b${GITHUB_RUN_NUMBER}"
           KREL="$PATCHES_KERNEL_VERSION"
           NOTES=RELEASE_NOTES.md
 
           cat > "$NOTES" <<EOF
           # GK6323V100C 内核 ${KREL}
-          ... 正文 ...
+
+          面向国科微 GK6323V100C 机顶盒（真机 4×Cortex-A55 + GICv3，ARM64）的自编译内核。
+
+          ## 说明文本
+
+          - 内核基线：Linux ${KREL}（与 hi3798mv100 仓库同一 pin），按补丁库 baseline 提取工作树
+          - 补丁来源：histb-mainline_patches，严格应用（等价 --fuzz=0），冲突即回滚
+          - 设备树：${TARGET_DTB}，逐项取自真机导出的设备树（A55 / GICv3 / 国科专有 IP 全部对齐）
+          - 内核配置：仓库 gk6323v100c.config；串口、eMMC、ext4、命令行分区表均编入内核（=y）
+          - 关键项：CONFIG_SND_USB_AUDIO —— 作者那版 BSP 内核没有编入，USB 声卡因此不出声
+          - 该驱动形态与 mv100 的 kernel.config 一致（=m），所以必须先把模块解开再重启
+          - 模块支持：CONFIG_MODULES=y，作者那版是纯内置内核（/proc/modules 不存在）
+          - 镜像格式：uImage，-A arm64，不压缩（-C none），加载/入口地址 ${UIMAGE_LOADADDR}
+          - 设备树同时追加在内核镜像末尾（追加处校验魔数 d00dfeed）并单独发布
+          - 大小约束：uImage 的 ih_size 已压到 13MiB 以内。原因：bootm 跳转内核前
+            会拿 ih_size 与 U-Boot 编译时的 CONFIG_SYS_BOOTM_LEN 比较，超了就报
+            'Image too large: increase CONFIG_SYS_BOOTM_LEN' 并复位（红灯循环重启）。
+            作者原厂 boot.img 14,028,808 字节（ih_size 14,028,744）能启动、上一版
+            约 15MB 的被拒，故上限落在 (13.38MiB, 15MB)，最可能是 14MiB。
+          - 提醒：arm32 的 hi3798mv100 靠 XZ 自解压 zImage 做到 8~9M，这套在本机
+            用不上（arm64 的 Image 无解压头、也不压缩），只能真把 Image 编小。
+          - 本内核版本号是 ${KREL}，与作者那版 6.18.46-gk6323-debian 不同，
+            模块会装到 /lib/modules/${KREL} 下，内核与模块必须一起替换
+
+          ## 产物
+
+          | 文件 | 用途 |
+          | --- | --- |
+          | boot.img | 内核镜像（uImage，内嵌设备树），写入 ${BOOT_PART} |
+          | ${TARGET_DTB} | 设备树，**必须**写入 ${DTBO_PART}（真机运行时用的是这个分区的 dtb） |
+          | modules.tar.gz | 内核模块，解压到根目录 / |
+          | Image | 未打包的裸内核，仅供核对 |
+          | config-${KREL} | 本次实际使用的内核配置 |
+          | sha256sums.txt | 上述产物的校验值 |
+
+          ## 刷写步骤（顺序不可颠倒）
+
+          1. 把 boot.img、${TARGET_DTB}、modules.tar.gz 传到机器 /tmp 目录
+          2. 先备份：dd if=${BOOT_PART} of=/root/boot.bak bs=1M conv=fsync
+          3. 先装模块：cd / && tar -xzf /tmp/modules.tar.gz && sync
+          4. 刷内核：dd if=/tmp/boot.img of=${BOOT_PART} bs=1M conv=fsync && sync
+          5. 刷设备树：dd if=/tmp/${TARGET_DTB} of=${DTBO_PART} bs=1K conv=fsync && sync
+          6. 等待数秒后 reboot
+
+          ## 回滚
+
+          若启动异常（指示灯异常闪烁、TTL 无输出），用备份镜像写回：
+
+          dd if=/root/boot.bak of=${BOOT_PART} bs=1M conv=fsync && sync && reboot
+
+          注意：本次同时改写了 dtbo 分区。回滚内核不会恢复原来的设备树，
+          若手上有原机 dtbo.img，请一并写回 ${DTBO_PART}。
+
+          校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。
           EOF
           sed -i 's/^ *//' "$NOTES"
           head -20 "$NOTES"
