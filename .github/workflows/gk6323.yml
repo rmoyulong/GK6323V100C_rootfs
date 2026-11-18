@@ -15,8 +15,8 @@ name: GK6323V100C 内核自动构建
 #   5) 刷写分区：boot = /dev/mmcblk0p15（60M，起始 112M）
 #
 # 基线（与 mv100 仓库逐字一致）：
-#   KERNEL_VERSION = 7.4-rc2
-#   BASE_SHA       = fd9230005e85472b81c1c7c16afe93dd878996b1
+#   KERNEL_VERSION = 7.4-rc3
+#   BASE_SHA       = 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
 #
 # 两点必须知道的事（详见 README）：
 #   a) 本基线是 histb 主线，不是作者那版国科 BSP 内核
@@ -49,8 +49,8 @@ jobs:
       # 补丁仓库（与 hi3798mv100 用同一个库）
       PATCHES_REPO: https://github.com/rmoyulong/histb-mainline_patches
       # 与补丁库 baseline 逐字一致
-      PATCHES_BASE_SHA: fd9230005e85472b81c1c7c16afe93dd878996b1
-      PATCHES_KERNEL_VERSION: 7.4-rc2
+      PATCHES_BASE_SHA: 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
+      PATCHES_KERNEL_VERSION: 7.4-rc3
       # uImage 头内地址，与实机 boot.img 实测一致
       UIMAGE_LOADADDR: "0x02000000"
       UIMAGE_ENTRYADDR: "0x02000000"
@@ -97,7 +97,7 @@ jobs:
           cd linux_build
           git checkout -q "$PATCHES_BASE_SHA"
 
-          # 规范化：7.4.0-rc2 -> 7.4-rc2，使两种写法等价
+          # 规范化：7.4.0-rc2 -> 7.4-rc3，使两种写法等价
           norm() { printf '%s' "$1" | sed -E 's/^([0-9]+\.[0-9]+)\.0/\1/'; }
           ACT="$(make -s kernelversion)"
           EXP="$PATCHES_KERNEL_VERSION"
@@ -359,17 +359,7 @@ jobs:
           echo "=== 产物列表 ==="
           ls -lh
 
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: gk6323v100c-linux-${{ env.PATCHES_KERNEL_VERSION }}
-          if-no-files-found: error
-          retention-days: 90
-          path: linux_build/out/*
-
-      - name: 发布到 GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 生成发布说明
         run: |
           set -euo pipefail
           cd linux_build/out
@@ -427,15 +417,19 @@ jobs:
             "校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。" \
             > "$NOTES"
           head -20 "$NOTES"
-
-          gh release create "$TAG" \
-            boot.img \
-            modules.tar.gz \
-            Image \
-            "$TARGET_DTB" \
-            sha256sums.txt \
-            --title "GK6323V100C 内核 ${KREL} (build ${GITHUB_RUN_NUMBER})" \
-            --notes-file RELEASE_NOTES.md \
-            --target "$GITHUB_SHA"
-
-          echo "已发布 Release：$TAG"
+          
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}        
+        with:
+          tag_name: GK6323V100C_latest
+          body_path: linux_build/RELEASE_NOTES.md
+          generate_release_notes: true
+          files: |
+            linux_build/out/boot.img
+            linux_build/out/Image
+            linux_build/out/$TARGET_DTB
+            linux_build/out/config-*
+            linux_build/out/modules.tar.gz
+            linux_build/out/sha256sums.txt
