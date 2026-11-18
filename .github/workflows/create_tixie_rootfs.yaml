@@ -8,14 +8,13 @@ on:
         required: false
         default: 'trixie'
   push:
-    tags:
-      - 'rootfs-*'
+    paths:
+      - '.github/workflows/create_tixie_rootfs.yml'
 
 permissions:
   contents: write
 
 env:
-  # ★ bookworm -> trixie
   DEBIAN_SUITE: ${{ github.event.inputs.debian_suite || 'trixie' }}
   MIRROR: http://ftp.cn.debian.org/debian/
   ROOTFS_DIR: ${{ github.workspace }}/rootfs
@@ -37,16 +36,12 @@ jobs:
                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
           sudo apt-get clean
           df -h
-            
+
       - name: Install debootstrap
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y debootstrap debian-archive-keyring gnupg dirmngr
-
-      # ★ 已删除 "Ensure bookworm archive key present" 步骤
-      #   Ubuntu 22.04 runner 的 debian-archive-keyring 足够新，
-      #   debootstrap 能自动验证 trixie Release 签名。
 
       - name: Update debian-archive-keyring for trixie
         run: |
@@ -55,24 +50,38 @@ jobs:
             http://deb.debian.org/debian/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb
           sudo dpkg -i /tmp/debian-archive-keyring.deb
           rm -f /tmp/debian-archive-keyring.deb
-          echo "[OK] debian-archive-keyring 2025.1 installed"    
-          
+          echo "[OK] debian-archive-keyring 2025.1 installed"
+
+      # ★ 新增：安装 QEMU 用户态模拟，使 x86 runner 能 chroot 运行 arm64 二进制
+      - name: Install QEMU for arm64 emulation
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y qemu-user-static binfmt-support
+          sudo systemctl restart systemd-binfmt || true
+          echo "----- binfmt_misc 中已注册的 qemu 处理器 -----"
+          ls /proc/sys/fs/binfmt_misc/ | grep -i qemu || true
+          # 确认 arm64 处理器存在（aarch64）
+          if ls /proc/sys/fs/binfmt_misc/ | grep -qi 'qemu-aarch64'; then
+            echo "[OK] qemu-aarch64 binfmt 已注册"
+          else
+            echo "[WARN] 未发现 qemu-aarch64 binfmt 注册项，尝试手动注册"
+            sudo update-binfmts --enable qemu-aarch64 || true
+          fi
+
       - name: Debootstrap base system
         run: |
           set -euo pipefail
           sudo mkdir -p "$ROOTFS_DIR"
 
-          # --components 仍用逗号分隔
-          # ★ php8.2-* -> php8.4-*
-          #GK6323V100C 的 CPU 是四核 64 位 ARM Cortex-A55。在 Debian/Ubuntu 的架构命名体系中：
-          #arm64：对应 64 位 ARM 架构（即 AArch64）。
-          #arm（或 armhf）：通常指 32 位 ARM 架构。
-          
-          sudo debootstrap \
+          # 跨架构构建：用 qemu-debootstrap 替代 debootstrap，
+          # 它会自动在 arm64 目标系统中注入 QEMU 静态二进制。
+          # 已从 --include 移除 grub-efi-arm64（避免 debootstrap 阶段 postinst 失败），
+          # 改为 chroot 配置阶段按需安装。
+          sudo qemu-debootstrap \
             --arch=arm64 \
             --variant=minbase \
             --components=main,non-free-firmware \
-            --include=systemd,systemd-sysv,dbus,ca-certificates,openssh-server,vsftpd,nginx,php8.4-cgi,php8.4-fpm,php8.4-mysql,procps,iproute2,iputils-ping,net-tools,vim,curl,wget,netplan.io,systemd-resolved,kmod,grub-efi-arm64,parted,dosfstools,e2fsprogs,rsync,fake-hwclock,systemd-timesyncd,usbutils,pciutils,evtest,kbd,dos2unix,mtools,firmware-realtek,firmware-iwlwifi,firmware-linux-free,ffmpeg,squeezelite,sudo,alsa-utils,alsa-tools,ethtool,cloud-guest-utils,wireless-regdb,zstd \
+            --include=systemd,systemd-sysv,dbus,ca-certificates,openssh-server,vsftpd,nginx,php8.4-cgi,php8.4-fpm,php8.4-mysql,procps,iproute2,iputils-ping,net-tools,vim,curl,wget,netplan.io,systemd-resolved,kmod,parted,dosfstools,e2fsprogs,rsync,fake-hwclock,systemd-timesyncd,usbutils,pciutils,evtest,kbd,dos2unix,mtools,firmware-realtek,firmware-iwlwifi,firmware-linux-free,ffmpeg,squeezelite,sudo,alsa-utils,alsa-tools,ethtool,cloud-guest-utils,wireless-regdb,zstd \
             "$DEBIAN_SUITE" "$ROOTFS_DIR" \
             "$MIRROR"
 
@@ -96,7 +105,6 @@ jobs:
       - name: Configure APT sources
         run: |
           set -euo pipefail
-          # ★ security 源改为阿里云的 debian-security 路径（trixie 推荐 https）
           sudo tee "$ROOTFS_DIR/etc/apt/sources.list" > /dev/null <<EOF
           deb $MIRROR ${DEBIAN_SUITE} main non-free-firmware
           deb $MIRROR ${DEBIAN_SUITE}-updates main non-free-firmware
@@ -120,7 +128,7 @@ jobs:
           EOF
           echo "----- 99-lms-network.conf -----"
           cat "$ROOTFS_DIR/etc/sysctl.d/99-lms-network.conf"
-          
+
           sudo mkdir -p "$ROOTFS_DIR/etc/update-motd.d"
           sudo cp ${{ github.workspace }}/patch/cats_banner $ROOTFS_DIR/etc/cats_banner
           sudo tee "$ROOTFS_DIR/etc/update-motd.d/40-cats_banner" > /dev/null <<'EOF'
@@ -129,12 +137,12 @@ jobs:
           cat /etc/cats_banner
           EOF
           sudo chmod +x $ROOTFS_DIR/etc/update-motd.d/40-cats_banner
-          
-          #修改为中国时间
+
+          # 修改为中国时间
           sudo rm -rf $ROOTFS_DIR/etc/localtime
           sudo ln -s /usr/share/zoneinfo/Asia/Shanghai $ROOTFS_DIR/etc/localtime
 
-          #修正为中文环境
+          # 修正为中文环境
           sudo mkdir -p "$ROOTFS_DIR/etc/default"
           sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/default/locale.conf
           sudo cp ${{ github.workspace }}/patch/locale.gen $ROOTFS_DIR/etc/locale.gen
@@ -174,8 +182,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          # chroot 内 DNS：rootfs 的 /etc/resolv.conf 可能是悬空 symlink，
-          # 直接 cp 会报 "not writing through dangling symlink"，故先删除再写
+          # chroot 内 DNS
           sudo rm -f "$ROOTFS_DIR/etc/resolv.conf"
           sudo cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
 
@@ -187,38 +194,27 @@ jobs:
           cd /
 
           apt-get update
-          
+
           apt-get install -y sudo samba samba-common-bin smbclient wsdd2 locales exfat-fuse exfatprogs git zip unzip
-          
-          #添加中文
+
+          # 添加中文
           locale-gen zh_CN.UTF-8
 
-          #wget -O /tmp/lms.deb https://github.com/rmoyulong/Template/releases/download/daphilV/lms.deb
           git clone https://github.com/rmoyulong/packages_lang_golang golang
           cd golang
           zip -s 0 lms_arm.zip --out lms_arm_full.zip
           unzip lms_arm_full.zip
           cd ..
 
-          # rootfs 是新建的，目录本不存在；rm -rf 仅为幂等清理，可保留也可删
           rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
 
           mkdir -p /var/lib/squeezeboxserver/prefs
           mkdir -p /var/lib/squeezeboxserver/cache
           mkdir -p /var/log/squeezeboxserver
 
-          # 先安装 deb（创建 squeezeboxserver 用户），失败也继续，靠 fix-broken 补依赖
-          #dpkg -i /tmp/lms.deb || true
           dpkg -i ./golang/lms_arm.deb || true
           apt-get --fix-broken install -y
 
-          # 确认用户已存在，否则后面 chown 会给出晦涩错误
-          #id squeezeboxserver >/dev/null 2>&1 || { echo "squeezeboxserver 用户不存在"; exit 1; }
-          #chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
-          #chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
-          #chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
-
-          #rm -f /tmp/lms.deb
           rm -rf ./golang
           EOF
           sudo chmod +x "$ROOTFS_DIR/tmp/install-lms.sh"
@@ -229,8 +225,9 @@ jobs:
 
           sudo ln -sf /run/systemd/resolve/stub-resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
 
+          # ★ 方案 A：只设密码，不 chage -d 0。
+          #   root 密码 1234 立即可用，SSH 交互登录与 WinSCP SFTP 都能直接通过认证。
           echo "root:1234" | sudo chroot "$ROOTFS_DIR" /usr/sbin/chpasswd
-          sudo chroot "$ROOTFS_DIR" chage -d 0 root
 
           sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' \
             "$ROOTFS_DIR/etc/ssh/sshd_config"
@@ -238,14 +235,12 @@ jobs:
           echo "local_enable=YES" | sudo tee -a "$ROOTFS_DIR/etc/vsftpd.conf"
           echo "write_enable=YES" | sudo tee -a "$ROOTFS_DIR/etc/vsftpd.conf"
 
-          # ★ php8.2 -> php8.4
           sudo sed -i 's/^;*cgi.fix_pathinfo.*/cgi.fix_pathinfo=1/' \
             "$ROOTFS_DIR/etc/php/8.4/cgi/php.ini" || true
 
           sudo chroot "$ROOTFS_DIR" systemctl enable systemd-networkd || true
           sudo chroot "$ROOTFS_DIR" systemctl enable systemd-networkd-wait-online || true
           sudo chroot "$ROOTFS_DIR" systemctl enable systemd-resolved || true
-          # ★ php8.2-fpm -> php8.4-fpm
           sudo chroot "$ROOTFS_DIR" systemctl enable nginx php8.4-fpm ssh vsftpd || true
           sudo chroot "$ROOTFS_DIR" systemctl enable systemd-timesyncd || true
           sudo chroot "$ROOTFS_DIR" systemctl enable fake-hwclock || true
@@ -263,13 +258,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ---------- 2) squeezelite 的 ALSA 输出 ----------
-          # ★ 必须用 plughw，不能用 hw：
-          #   hw:0,0 是硬件直通、不做任何转换，采样率必须与硬件原生完全一致；
-          #   ALC662 模拟输出原生锁定 48000Hz，播放 44.1kHz（CD 与多数无损）时会
-          #   打开失败并反复重开设备，表现为"响一下即中断"。
-          #   plughw 经 ALSA 插件层自动转换采样率与格式，任何采样率都能播。
-          #sudo mkdir -p "$ROOTFS_DIR/etc/default"
+          # ---------- squeezelite 的 ALSA 输出 ----------
+          # hw:1,0 为硬件直通，采样率必须与声卡原生一致；
+          # 若播放 44.1kHz 中断，请改回 plughw:1,0 让 ALSA 自动转换采样率。
+          # 声卡编号（card 1）需在目标设备上用 aplay -l 实测确认。
           sudo tee "$ROOTFS_DIR/etc/default/squeezelite" > /dev/null <<'EOF'
           # Defaults for squeezelite initscript
           # sourced by /etc/init.d/squeezelite
@@ -279,37 +271,17 @@ jobs:
           SL_NAME="Squeezelite"
 
           # ALSA output device
-          # 用 plughw（而非 hw）：hw 是硬件直通、不做转换，采样率必须与硬件原生一致，
-          # ALC662 原生仅 48000Hz，播 44.1kHz 会失败中断；plughw 会自动转换采样率。
-          #SL_SOUNDCARD="plughw:0,0"
+          # hw:1,0 为硬件直通；若采样率不匹配导致中断，改用 plughw:1,0
           SL_SOUNDCARD="hw:1,0"
 
-          # Squeezebox server (Logitech Media Server):
-          # Uncomment the next line if you want to point squeezelite at the IP address of
-          # your squeezebox server. This is usually unnecessary as the server is
-          # automatically discovered.
-          #SB_SERVER_IP="192.168.x.y"
-
           # Additional options to pass to squeezelite:
-          #   -p 99            实时优先级
-          #   -r 44100-48000   声明设备支持的采样率范围，避免尝试硬件不支持的值
-          #   -b 2048:3445     官方默认缓冲（不加大，避免延迟升高）
-          # 注意：不要加 -D（DSD 声明），ALC662 不支持 DSD，声明后播 DSD 会无声或出噪声。
-          # Please do not include -z to make squeezelite daemonise itself.
           SB_EXTRA_ARGS="-p 99 -r 44100-48000 -b 2048:3445 -C 5"
           EOF
 
           echo "----- /etc/default/squeezelite -----"
           sudo cat "$ROOTFS_DIR/etc/default/squeezelite"
 
-          # ---------- 3) 断言：防止将来被误改回 hw: 直通 ----------
-          #grep -q '^SL_SOUNDCARD="plughw:' "$ROOTFS_DIR/etc/default/squeezelite" || {
-          #  echo " [FAIL] SL_SOUNDCARD 不是 plughw：hw 直通在采样率不匹配时会中断播放"
-          #  exit 1
-          #}
-          #echo " [OK] SL_SOUNDCARD 使用 plughw（自动采样率转换）"
-          
-          # ---------- 4) 设置LMS plugins ----------
+          # ---------- 设置 LMS plugins ----------
           sudo mkdir -p "$ROOTFS_DIR/var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins"
           sudo mkdir -p "$ROOTFS_DIR/var/lib/squeezeboxserver/prefs/plugin"
           sudo tar zxvfp "${{ github.workspace }}/patch/plugins.tar.gz" -C "$ROOTFS_DIR"
@@ -356,18 +328,14 @@ jobs:
           trap 'rm -rf "$WORK"' EXIT
 
           echo "Extracting tarball to measure size..."
-          tar -xzf "$TARBALL" -C "$WORK/rootfs" 2>/dev/null || {
-              mkdir -p "$WORK/rootfs"
-              tar -xzf "$TARBALL" -C "$WORK/rootfs"
-          }
+          mkdir -p "$WORK/rootfs"
+          tar -xzf "$TARBALL" -C "$WORK/rootfs"
 
-          # du 返回的是 1K block，转成字节
           USED_KB="$(du -sk "$WORK/rootfs" | awk '{print $1}')"
           USED_BYTES=$((USED_KB * 1024))
-          EXTRA_BYTES=$((500 * 1024 * 1024))           # +500M 余量
+          EXTRA_BYTES=$((500 * 1024 * 1024))
           TOTAL_BYTES=$((USED_BYTES + EXTRA_BYTES))
 
-          # 对齐到 MiB（ext4 推荐 1MiB 对齐）
           MiB=$((1024 * 1024))
           TOTAL_BYTES=$(( (TOTAL_BYTES + MiB - 1) / MiB * MiB ))
 
@@ -378,15 +346,11 @@ jobs:
           IMG="$OUT_DIR/rootfs.img"
           rm -f "$IMG"
           truncate -s "$TOTAL_BYTES" "$IMG"
-
-          # mkfs.ext4 的 -d 选项直接把目录内容写入新文件系统
-          # 加 -E root_owner=0:0 保证属主为 root（可选，按需保留）
           mkfs.ext4 -q -F -L rootfs -d "$WORK/rootfs" "$IMG"
 
           # ---------- 4. 校验 ----------
           ls -lh "$IMG"
           file "$IMG"
-          # 用 e2fsck 做只读检查，确认镜像可挂载
           e2fsck -fn "$IMG" || true
 
           echo "rootfs.img created at $IMG ($((TOTAL_BYTES / 1024 / 1024)) MiB)"
@@ -405,14 +369,14 @@ jobs:
 
             **🧊 固件信息**
 
-            - ➦ 💻 固件平台：arm64-linux GK6323V100C 的 CPU 是四核 64 位 ARM
-            - ➦ 🚀 内核版本：${{ env.KERNEL_VERSION }}（配合 kernel-image 发布使用））
+            - ➦ 💻 固件平台：arm64-linux GK6323V100C（四核 64 位 ARM Cortex-A55）
+            - ➦ 🚀 内核版本：${{ env.KERNEL_VERSION }}（配合 kernel-image 发布使用）
             - ➦ 📦 软件包：openssh-server / vsftpd / nginx / php8.4-cgi / php8.4-fpm / LMS
-            - ➦ 🎵 音频：squeezelite 默认 hw:0,0 + HDA 关闭省电（options snd_hda_intel power_save=0），避免响一下就断
+            - ➦ 🎵 音频：squeezelite 默认 hw:1,0 若播放中断请改用 plughw:1,0
             ---
 
             **初始 root 密码：`1234`**
-            首次通过 SSH 登录会强制要求修改密码；FTP 需在改密后才能登录。
+            SSH 与 WinSCP SFTP 均可直接用 root / 1234 登录，登录后请尽快修改密码。
 
             若下载到的是 rootfs.tar.gz，直接解压：
               tar -xzf rootfs.tar.gz -C /目标分区

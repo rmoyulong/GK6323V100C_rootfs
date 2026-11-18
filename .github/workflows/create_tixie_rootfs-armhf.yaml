@@ -1,0 +1,386 @@
+name: 编译trixie RootFS armhf (Debian+Netplan+SSH/FTP/Nginx/PHP8/LMS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      debian_suite:
+        description: 'Debian 套件(trixie = PHP 8.4)'
+        required: false
+        default: 'trixie'
+  push:
+    paths:
+      - '.github/workflows/create_tixie_rootfs-armhf.yml'
+
+permissions:
+  contents: write
+
+env:
+  DEBIAN_SUITE: ${{ github.event.inputs.debian_suite || 'trixie' }}
+  MIRROR: http://ftp.cn.debian.org/debian/
+  ROOTFS_DIR: ${{ github.workspace }}/rootfs
+  OUT_DIR: ${{ github.workspace }}/out
+  KERNEL_VERSION: 7.3.4
+  TARGET_ARCH: armhf          # ★ armhf：玩客云 Amlogic S805 (ARMv7 硬浮点)
+
+jobs:
+  build-rootfs:
+    name: 构建 RootFS (armhf)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean
+          df -h
+
+      - name: Install debootstrap
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y debootstrap debian-archive-keyring gnupg dirmngr
+
+      - name: Update debian-archive-keyring for trixie
+        run: |
+          set -euo pipefail
+          wget -O /tmp/debian-archive-keyring.deb \
+            http://deb.debian.org/debian/pool/main/d/debian-archive-keyring/debian-archive-keyring_2025.1_all.deb
+          sudo dpkg -i /tmp/debian-archive-keyring.deb
+          rm -f /tmp/debian-archive-keyring.deb
+          echo "[OK] debian-archive-keyring 2025.1 installed"
+
+      # ★ armhf：安装 QEMU 用户态模拟（qemu-arm-static），使 x86 runner 能 chroot 运行 armhf 二进制
+      - name: Install QEMU for armhf emulation
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y qemu-user-static binfmt-support
+          sudo systemctl restart systemd-binfmt || true
+          echo "----- binfmt_misc 中已注册的 qemu 处理器 -----"
+          ls /proc/sys/fs/binfmt_misc/ | grep -i qemu || true
+          # armhf 对应 binfmt 名 qemu-arm（注意不是 qemu-armeb / qemu-aarch64）
+          if ls /proc/sys/fs/binfmt_misc/ | grep -qi 'qemu-arm'; then
+            echo "[OK] qemu-arm binfmt 已注册"
+          else
+            echo "[WARN] 未发现 qemu-arm binfmt 注册项，尝试手动注册"
+            sudo update-binfmts --enable qemu-arm || true
+          fi
+
+      - name: Debootstrap base system
+        run: |
+          set -euo pipefail
+          sudo mkdir -p "$ROOTFS_DIR"
+
+          # ★ armhf：--arch=armhf；玩客云 U-Boot 引导，不需要 GRUB，
+          #   故 --include 中不含任何 grub-* 包。
+          sudo qemu-debootstrap \
+            --arch=armhf \
+            --variant=minbase \
+            --components=main,non-free-firmware \
+            --include=systemd,systemd-sysv,dbus,ca-certificates,openssh-server,vsftpd,nginx,php8.4-cgi,php8.4-fpm,php8.4-mysql,procps,iproute2,iputils-ping,net-tools,vim,curl,wget,netplan.io,systemd-resolved,kmod,parted,dosfstools,e2fsprogs,rsync,fake-hwclock,systemd-timesyncd,usbutils,pciutils,evtest,kbd,dos2unix,mtools,firmware-realtek,firmware-iwlwifi,firmware-linux-free,ffmpeg,squeezelite,sudo,alsa-utils,alsa-tools,ethtool,cloud-guest-utils,wireless-regdb,zstd \
+            "$DEBIAN_SUITE" "$ROOTFS_DIR" \
+            "$MIRROR"
+
+      - name: Verify firmware packages
+        run: |
+          set -euo pipefail
+          echo "===== 校验固件包是否装上（non-free-firmware 生效的标志）====="
+          for pkg in firmware-realtek firmware-linux-free; do
+            if sudo chroot "$ROOTFS_DIR" dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null \
+                 | grep -q "install ok installed"; then
+              echo "  [OK]   $pkg"
+            else
+              echo "  [FAIL] $pkg 未安装 —— 请检查 --components 是否为逗号分隔"
+              exit 1
+            fi
+          done
+          echo "----- 实际文件抽查 -----"
+          ls -1 "$ROOTFS_DIR/lib/firmware/rtl_nic" 2>/dev/null | head -5 || true
+          ls -1 "$ROOTFS_DIR/lib/firmware" 2>/dev/null | grep -i iwlwifi || true
+
+      - name: Configure APT sources
+        run: |
+          set -euo pipefail
+          sudo tee "$ROOTFS_DIR/etc/apt/sources.list" > /dev/null <<EOF
+          deb $MIRROR ${DEBIAN_SUITE} main non-free-firmware
+          deb $MIRROR ${DEBIAN_SUITE}-updates main non-free-firmware
+          deb http://security.debian.org/debian-security ${DEBIAN_SUITE}-security main non-free-firmware
+          EOF
+          echo "----- sources.list -----"
+          cat "$ROOTFS_DIR/etc/apt/sources.list"
+
+      - name: Configure LMS network sysctl
+        run: |
+          set -euo pipefail
+          sudo mkdir -p "$ROOTFS_DIR/etc/sysctl.d"
+          sudo tee "$ROOTFS_DIR/etc/sysctl.d/99-lms-network.conf" > /dev/null <<'EOF'
+          # LMS 高解析度音乐异步推流网络优化
+          net.core.somaxconn = 1024
+          net.core.netdev_max_backlog = 5000
+          net.core.rmem_max = 16777216
+          net.core.wmem_max = 16777216
+          net.ipv4.tcp_rmem = 4096 87380 16777216
+          net.ipv4.tcp_wmem = 4096 65536 16777216
+          EOF
+          echo "----- 99-lms-network.conf -----"
+          cat "$ROOTFS_DIR/etc/sysctl.d/99-lms-network.conf"
+
+          sudo mkdir -p "$ROOTFS_DIR/etc/update-motd.d"
+          sudo cp ${{ github.workspace }}/patch/cats_banner $ROOTFS_DIR/etc/cats_banner
+          sudo tee "$ROOTFS_DIR/etc/update-motd.d/40-cats_banner" > /dev/null <<'EOF'
+          #!/bin/bash
+          set -o pipefail
+          cat /etc/cats_banner
+          EOF
+          sudo chmod +x $ROOTFS_DIR/etc/update-motd.d/40-cats_banner
+
+          # 修改为中国时间
+          sudo rm -rf $ROOTFS_DIR/etc/localtime
+          sudo ln -s /usr/share/zoneinfo/Asia/Shanghai $ROOTFS_DIR/etc/localtime
+
+          # 修正为中文环境
+          sudo mkdir -p "$ROOTFS_DIR/etc/default"
+          sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/default/locale.conf
+          sudo cp ${{ github.workspace }}/patch/locale.gen $ROOTFS_DIR/etc/locale.gen
+          sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/locale.conf
+
+      - name: Configure netplan (DHCP dynamic IP)
+        run: |
+          set -euo pipefail
+          sudo mkdir -p "$ROOTFS_DIR/etc/systemd/network"
+          sudo ln -sf /dev/null "$ROOTFS_DIR/etc/systemd/network/99-default.link"
+
+          sudo mkdir -p "$ROOTFS_DIR/etc/netplan"
+          sudo tee "$ROOTFS_DIR/etc/netplan/01-netcfg.yaml" > /dev/null <<'EOF'
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              all-eth:
+                match:
+                  name: "*"
+                dhcp4: true
+                dhcp6: true
+          EOF
+          sudo chmod 600 "$ROOTFS_DIR/etc/netplan/01-netcfg.yaml"
+
+      - name: Configure rootfs (chroot)
+        run: |
+          set -euo pipefail
+
+          sudo mount --bind /dev  "$ROOTFS_DIR/dev"
+          sudo mount --bind /proc "$ROOTFS_DIR/proc"
+          sudo mount --bind /sys  "$ROOTFS_DIR/sys"
+          cleanup() {
+            sudo umount "$ROOTFS_DIR/dev"  || true
+            sudo umount "$ROOTFS_DIR/proc" || true
+            sudo umount "$ROOTFS_DIR/sys"  || true
+          }
+          trap cleanup EXIT
+
+          # chroot 内 DNS
+          sudo rm -f "$ROOTFS_DIR/etc/resolv.conf"
+          sudo cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
+
+          # 把 LMS 安装脚本放进 rootfs 内再 chroot 执行
+          sudo tee "$ROOTFS_DIR/tmp/install-lms.sh" >/dev/null <<'EOF'
+          #!/bin/bash
+          set -euo pipefail
+
+          cd /
+
+          apt-get update
+
+          apt-get install -y sudo samba samba-common-bin smbclient wsdd2 locales exfat-fuse exfatprogs git zip unzip
+
+          # 添加中文
+          locale-gen zh_CN.UTF-8
+
+          git clone https://github.com/rmoyulong/packages_lang_golang golang
+          cd golang
+          zip -s 0 lms_arm.zip --out lms_arm_full.zip
+          unzip lms_arm_full.zip
+          cd ..
+
+          rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
+
+          mkdir -p /var/lib/squeezeboxserver/prefs
+          mkdir -p /var/lib/squeezeboxserver/cache
+          mkdir -p /var/log/squeezeboxserver
+
+          dpkg -i ./golang/lms_arm.deb || true
+          apt-get --fix-broken install -y
+
+          rm -rf ./golang
+          EOF
+          sudo chmod +x "$ROOTFS_DIR/tmp/install-lms.sh"
+          sudo chroot "$ROOTFS_DIR" /bin/bash /tmp/install-lms.sh
+
+          printf 'debian\n' | sudo tee "$ROOTFS_DIR/etc/hostname" > /dev/null
+          printf '127.0.0.1\tlocalhost\n127.0.1.1\tdebian\n' | sudo tee "$ROOTFS_DIR/etc/hosts" > /dev/null
+
+          sudo ln -sf /run/systemd/resolve/stub-resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
+
+          # ★ 方案 A：只设密码，不 chage -d 0。
+          #   root 密码 1234 立即可用，SSH 交互登录与 WinSCP SFTP 都能直接通过认证。
+          echo "root:1234" | sudo chroot "$ROOTFS_DIR" /usr/sbin/chpasswd
+
+          sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' \
+            "$ROOTFS_DIR/etc/ssh/sshd_config"
+
+          echo "local_enable=YES" | sudo tee -a "$ROOTFS_DIR/etc/vsftpd.conf"
+          echo "write_enable=YES" | sudo tee -a "$ROOTFS_DIR/etc/vsftpd.conf"
+
+          sudo sed -i 's/^;*cgi.fix_pathinfo.*/cgi.fix_pathinfo=1/' \
+            "$ROOTFS_DIR/etc/php/8.4/cgi/php.ini" || true
+
+          sudo chroot "$ROOTFS_DIR" systemctl enable systemd-networkd || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable systemd-networkd-wait-online || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable systemd-resolved || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable nginx php8.4-fpm ssh vsftpd || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable systemd-timesyncd || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable fake-hwclock || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable lyrionmusicserver || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable squeezelite || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable smbd || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable wsdd2 || true
+
+          sudo chroot "$ROOTFS_DIR" netplan generate || true
+
+          sudo chroot "$ROOTFS_DIR" apt-get clean
+          sudo rm -rf "$ROOTFS_DIR/var/lib/apt/lists/"* || true
+
+      - name: Configure audio (squeezelite + HDA no-powersave)
+        run: |
+          set -euo pipefail
+
+          # ---------- squeezelite 的 ALSA 输出 ----------
+          # hw:1,0 为硬件直通，采样率必须与声卡原生一致；
+          # 若播放 44.1kHz 中断，请改回 plughw:1,0 让 ALSA 自动转换采样率。
+          # 声卡编号（card 1）需在目标设备上用 aplay -l 实测确认。
+          # 玩客云 S805 内置音频通常为 card 0，若用 HDMI/USB 声卡请相应调整。
+          sudo tee "$ROOTFS_DIR/etc/default/squeezelite" > /dev/null <<'EOF'
+          # Defaults for squeezelite initscript
+          # sourced by /etc/init.d/squeezelite
+          # installed at /etc/default/squeezelite by the maintainer scripts
+
+          # The name for the squeezelite player:
+          SL_NAME="Squeezelite"
+
+          # ALSA output device
+          # hw:1,0 为硬件直通；若采样率不匹配导致中断，改用 plughw:1,0
+          SL_SOUNDCARD="hw:1,0"
+
+          # Additional options to pass to squeezelite:
+          SB_EXTRA_ARGS="-p 99 -r 44100-48000 -b 2048:3445 -C 5"
+          EOF
+
+          echo "----- /etc/default/squeezelite -----"
+          sudo cat "$ROOTFS_DIR/etc/default/squeezelite"
+
+          # ---------- 设置 LMS plugins ----------
+          sudo mkdir -p "$ROOTFS_DIR/var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins"
+          sudo mkdir -p "$ROOTFS_DIR/var/lib/squeezeboxserver/prefs/plugin"
+          sudo tar zxvfp "${{ github.workspace }}/patch/plugins.tar.gz" -C "$ROOTFS_DIR"
+
+      - name: Package rootfs
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          sudo tar --numeric-owner --acls --xattrs -zcf "$OUT_DIR/rootfs.tar.gz" -C "$ROOTFS_DIR" .
+          ls -lh "$OUT_DIR/rootfs.tar.gz"
+
+          ( cd "$OUT_DIR" && sha256sum rootfs.tar.gz > rootfs.tar.gz.sha256 )
+
+          SIZE=$(stat -c%s "$OUT_DIR/rootfs.tar.gz")
+          LIMIT=$((1900 * 1024 * 1024))
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            cd "$OUT_DIR"
+            split -b 1900m rootfs.tar.gz rootfs.tar.gz.part-
+            rm -f rootfs.tar.gz
+            ls -lh
+          fi
+
+      - name: Verify output files
+        run: |
+          set -euo pipefail
+          ls -lh "$OUT_DIR"
+
+          # ---------- 1. 准备 tar 源文件（合并分片） ----------
+          TARBALL="$OUT_DIR/rootfs.tar.gz"
+          if [ ! -f "$TARBALL" ]; then
+            if [ -f "$OUT_DIR/rootfs.tar.gz.part-aa" ]; then
+              echo "Merging split parts..."
+              cat "$OUT_DIR"/rootfs.tar.gz.part-* > "$TARBALL"
+            else
+              echo "ERROR: no rootfs.tar.gz or parts found in $OUT_DIR" >&2
+              ls -lh "$OUT_DIR" >&2
+              exit 1
+            fi
+          fi
+          test -f "$TARBALL"
+
+          # ---------- 2. 解压到临时目录并测量大小 ----------
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+
+          echo "Extracting tarball to measure size..."
+          mkdir -p "$WORK/rootfs"
+          tar -xzf "$TARBALL" -C "$WORK/rootfs"
+
+          USED_KB="$(du -sk "$WORK/rootfs" | awk '{print $1}')"
+          USED_BYTES=$((USED_KB * 1024))
+          EXTRA_BYTES=$((500 * 1024 * 1024))
+          TOTAL_BYTES=$((USED_BYTES + EXTRA_BYTES))
+
+          MiB=$((1024 * 1024))
+          TOTAL_BYTES=$(( (TOTAL_BYTES + MiB - 1) / MiB * MiB ))
+
+          echo "Rootfs used : $((USED_BYTES / 1024 / 1024)) MiB"
+          echo "Image size  : $((TOTAL_BYTES / 1024 / 1024)) MiB"
+
+          # ---------- 3. 创建 ext4 镜像并用 -d 直接写入目录 ----------
+          IMG="$OUT_DIR/rootfs.img"
+          rm -f "$IMG"
+          truncate -s "$TOTAL_BYTES" "$IMG"
+          mkfs.ext4 -q -F -L rootfs -d "$WORK/rootfs" "$IMG"
+
+          # ---------- 4. 校验 ----------
+          ls -lh "$IMG"
+          file "$IMG"
+          e2fsck -fn "$IMG" || true
+
+          echo "rootfs.img created at $IMG ($((TOTAL_BYTES / 1024 / 1024)) MiB)"
+
+      - name: Create Release and upload
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          replacesArtifacts: true
+          artifactErrorsFailBuild: true
+          tag: armhf-rootfs-${{ env.DEBIAN_SUITE }}-latest
+          name: armhf-rootfs-${{ env.DEBIAN_SUITE }}-latest
+          artifacts: ${{ env.OUT_DIR }}/*
+          body: |
+            Debian ${{ env.DEBIAN_SUITE }} rootfs (armhf)
+
+            **🧊 固件信息**
+
+            - ➦ 💻 固件平台：armhf-linux 玩客云 Amlogic S805（4×Cortex-A5，ARMv7 硬浮点）
+            - ➦ 🚀 内核版本：${{ env.KERNEL_VERSION }}（配合 kernel-image 发布使用）
+            - ➦ 📦 软件包：openssh-server / vsftpd / nginx / php8.4-cgi / php8.4-fpm / LMS
+            - ➦ 🎵 音频：squeezelite 默认 hw:1,0 若播放中断请改用 plughw:1,0
+            ---
+
+            **初始 root 密码：`1234`**
+            SSH 与 WinSCP SFTP 均可直接用 root / 1234 登录，登录后请尽快修改密码。
+
+            若下载到的是 rootfs.tar.gz，直接解压：
+              tar -xzf rootfs.tar.gz -C /目标分区
+
+            若下载到的是 rootfs.tar.gz.part-* 分片，先合并再校验：
+              cat rootfs.tar.gz.part-* > rootfs.tar.gz
+              sha256sum -c rootfs.tar.gz.sha256
