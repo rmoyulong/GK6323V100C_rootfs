@@ -326,12 +326,14 @@ jobs:
           test -f "$TARBALL"
 
           # ---------- 2. 解压到临时目录并测量大小 ----------
+          #   /dev 下的设备节点需要 root 才能 mknod，普通用户解压会报错；
+          #   这里只为测大小，排除 ./dev 即可，不影响 du 结果。
           WORK="$(mktemp -d)"
           trap 'rm -rf "$WORK"' EXIT
 
           echo "Extracting tarball to measure size..."
           mkdir -p "$WORK/rootfs"
-          tar -xzf "$TARBALL" -C "$WORK/rootfs"
+          tar -xzf "$TARBALL" -C "$WORK/rootfs" --exclude='./dev/*'
 
           USED_KB="$(du -sk "$WORK/rootfs" | awk '{print $1}')"
           USED_BYTES=$((USED_KB * 1024))
