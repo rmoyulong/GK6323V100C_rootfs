@@ -396,6 +396,15 @@ jobs:
           echo "=== 最终内核版本 ==="
           make -s ARCH="$ARCH" kernelrelease
 
+      - name: 恢复 ccache 缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: "${{ runner.os }}-ccache-${{ env.KERNEL_VERSION }}-${{ github.sha }}"
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ env.KERNEL_VERSION }}-
+            ${{ runner.os }}-ccache-
+            
       - name: 编译内核与模块
         run: |
           set -euo pipefail
