@@ -293,7 +293,18 @@ jobs:
           wget https://github.com/rmoyulong/GK6323V100C/releases/download/GK6323V100C_latest/modules.tar.gz -O modules.tar.gz
           sudo tar zxvfp "./modules.tar.gz" -C "$ROOTFS_DIR/usr"
           rm modules.tar.gz
-
+          
+          # ---------- 6) 添加.bashrc 让ls有颜色 ----------
+          sudo mkdir -p "$ROOTFS_DIR/root"
+          sudo cp ${{ github.workspace }}/patch/.bashrc $ROOTFS_DIR/root/.bashrc
+          
+          # ---------- 7) 添加samba配置 ----------
+          sudo mkdir -p "$ROOTFS_DIR/etc/samba"
+          sudo cp ${{ github.workspace }}/patch/smb.conf /mnt/rootfs/etc/samba/smb.conf
+          
+          # ---------- 8) 创建挂载点（NAS MUSIC mount 使用） ----------
+          sudo mkdir -p $ROOTFS_DIR/mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
+          
       - name: Package rootfs
         run: |
           set -euo pipefail
