@@ -235,19 +235,28 @@ New value: CONFIG_NTFS3_FS=y
   （`HISI_FESTA_PHY`），分别依赖 `NET_VENDOR_HISILICON`/`PHYLIB`、`OF_MDIO`。
   少 MDIO 总线时的现象很有特色：`eth0` 存在，但始终没有 link。
 - 处理：确认 `NET_VENDOR_HISILICON=y`、`PHYLIB=y`、`OF_MDIO=y`、
-  `HISI_FEMAC=y`、`MDIO_HISI_FEMAC=y`、`HISI_FESTA_PHY=y` 都在。
+  `HISI_FEMAC=y`、`MDIO_HISI_FEMAC=y` 都在。PHY 一侧：补丁库 rc3 起内核树里
+  已没有 `HISI_FESTA_PHY` 符号（见构建阶段第 9 条），若网口因此拿不到 link，
+  需等驱动回到补丁库，或改用固定链路方案。
 
 ### 5. 设备树 model 不对
 
 - 现象：`verify-device.sh` 报"设备树 model 不是本机型"。
 - 原因：dtbo 分区没写新 dtb，或写的是海思那支。
 - 处理：`sudo dd if=gk6323v100c-chaoge-z71a.dtb of=/dev/mmcblk0p10 bs=1K conv=fsync && sync && reboot`。
-- **另注意设备树体积**：`bootcmd` 里从 dtbo 分区读的是 `0x20` = 32 块
-  = **16KiB** 到 `0x03FFC000`（正好顶到内核加载地址 `0x04000000` 之前）。
-  作者那版 dtbo 里的 dtb 只有 **9156 字节**。本仓库当前的 dtb 约 28KiB，
-  若引导器确实按 32 块读取，会**被截断**、内核拿不到完整设备树。
-  流水线在打包时会打印 dtb 字节数，超过 16KiB 会告警；
-  真遇到这种情况，下一步是精简 `dts/gk6323v100c-chaoge-z71a.dts` 的节点。
+- **设备树体积：已核实不是瓶颈，但流水线仍每轮打印**。`bootcmd` 里从 dtbo 分区
+  读的是 `0x20` = 32 块 = **16KiB** 到 `0x03FFC000`（正好顶到内核加载地址
+  `0x04000000` 之前）；作者那版 dtbo 里的 dtb 是 **9156 字节**。
+  本地按 dtb 规范逐字节核算本仓库的 dts：**未精简版约 7100 字节**（带 `-@`
+  约 8060），**精简版约 3800 字节** —— 只占 16KiB 窗口的 **23%**，余量充足。
+- ⚠️ 别被 Release 列表里那个 **"28.24 KB"** 误导：那是页面上相邻字段
+  （文件名 + 哈希 + 大小）粘连显示的结果，与这份 dts 编出的 dtb 无关
+  （同一列表里 `boot.img` 也显示成 "1 MB"、`config` 显示成 "1322 KB"，都不合理）。
+  以 `sha256sums.txt` 的记录，或构建日志「设备树体积诊断」一节为准。
+- 流水线现在会打印 dts 字节数、dtb 字节数、窗口占用百分比与节点数；
+  **dtb 超过 16KiB 直接中止**，不会产出会被截断的 dtb。真要超了，第一次序是删
+  dts 里无消费者的节点（`gpio`×8、未用的 `uart2`/`uart3`、`i2c0`/`i2c1`、`spi0`），
+  并确认没有给 dtc 加回 `-@`（`-@` 会白白生成 `__symbols__`，多占约 900 字节）。
 
 ### 6. 内核根本没加载：U-Boot 报 `Image too large: increase CONFIG_SYS_BOOTM_LEN`
 
@@ -279,7 +288,8 @@ New value: CONFIG_NTFS3_FS=y
   照搬 mv100 的配置也不会变小。
 - **`mkimage -C gzip` 同样绕不过去**：`bootm` 的 gzip 分支把
   `CONFIG_SYS_BOOTM_LEN` 当作解压输出缓冲上限，解压后的 `Image` 仍须 ≤ 该值。
-- 处理：在 `gk6323v100c.config` 的**「瘦身层」**继续关掉无关子系统、重建。
+- 处理：在 **`slim.config`**（裁剪层，只写 `# CONFIG_XXX is not set`）里继续关掉
+  无关子系统、重建 —— v11 起所有裁剪项都已从 `gk6323v100c.config` 搬到该文件。
   流水线会在打包步骤打印 `ih_size`、`size vmlinux`、**最大的 30 个内置 `.o`**
   与顶层目录占用，照那份清单接着砍即可。
   关键认识：Image 里只装 `=y` 的代码，编成 `=m` 的驱动对 Image 体积**零贡献**
