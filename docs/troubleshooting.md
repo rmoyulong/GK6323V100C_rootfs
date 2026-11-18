@@ -122,6 +122,70 @@
 - 处理：脚本不必改。但「全量应用」意味着 9xx 的 bring-up／插桩补丁也会被打上；
   若不想把调试内容带进产物，应在补丁库侧用 `series` 明确列出要用的补丁。
 
+### 13. 一堆 `Value of CONFIG_xxx is redefined by fragment ...`，最后只报 `exit code 1`
+
+现象（2026-11-19 真机日志）：先是若干条
+
+```
+Value of CONFIG_NTFS3_FS is redefined by fragment ../slim.config:
+Previous value: # CONFIG_NTFS3_FS is not set
+New value: CONFIG_NTFS3_FS=y
+```
+
+紧跟着 `.config:12076:warning: symbol value 'n' invalid for FRAME_WARN`，再一句
+`yes: standard output: Broken pipe`，最后 `Process completed with exit code 1`，
+后面的检查一节全都没跑。这其实是**两件事叠在一起**：
+
+- `redefined` **不是错误**，是 `merge_config.sh` 的正常提示 —— 两个 fragment 都写了
+  同一个符号，后者覆盖前者。但它暴露出真问题：**两个配置层在抢符号**。那批里
+  `NTFS3_FS`、`FB`、`MSDOS_FS`、`NLS_CODEPAGE_437`、`DEBUG_INFO_NONE` 都是这种，
+  谁生效只取决于文件顺序，肉眼看不出来。
+- `exit code 1` 与配置内容无关，是**脚本自杀**。本步骤开着 `set -o pipefail`，
+  而 `make olddefconfig` 是非交互的、根本不读 stdin；写成
+  `yes "" | make … olddefconfig` 时 make 先退出，`yes` 收到 SIGPIPE，
+  整条管道返回非零，`set -e` 立刻杀掉步骤 —— 所以只剩那一句 Broken pipe。
+  实测：`set -euo pipefail; yes "" | true` 退出码 **1**；去掉 pipefail 则为 0。
+
+处理（v11 已做）：`olddefconfig` 前去掉 `yes "" |`；新增「配置分层纪律自检」，
+功能层出现关闭行、裁剪层出现启用行、或两层符号重叠，都直接中止并打印行号。
+
+### 14. `.config:NNNN:warning: symbol value 'n' invalid for FRAME_WARN`
+
+- 原因：`CONFIG_FRAME_WARN` 是 **int** 型符号，裁剪层却写成
+  `# CONFIG_FRAME_WARN is not set`；merge_config 会把它译成
+  `CONFIG_FRAME_WARN=n`，Kconfig 拒收。
+- 处理：v11 已从裁剪层删掉这一行。以后要调阈值就写数值
+  （`CONFIG_FRAME_WARN=2048`），不写就用内核默认（64 位为 2048）。
+  同类还有 hex / string 型符号 —— 例如 `CONFIG_CMDLINE` 要靠
+  `CONFIG_CMDLINE=""` 这种写法，不能写 `is not set`。
+
+### 15. 裁剪项写进去了却没生效
+
+- 现象：`=== 裁剪层逐行自检 ===` 里出现
+  `裁剪未生效：CONFIG_XXX 仍是 y —— 多为被 select 强制拉起，或依赖被拉回`。
+- 原因：最常见是被别的已开启符号 `select` 强制拉起 —— 例如
+  `WATCHDOG_CORE` 之于 `ARM_SP805_WATCHDOG`；其次是它的父菜单没开，
+  写进去也无处落地。
+- 处理：自检会把该符号在本次内核树里的 Kconfig 定义打印出来，看
+  `select` / `depends on` 那一行就能判断：被 select 拉起的**删掉这行**（改不动），
+  父项没开的**先开父项**。
+- 特别提醒：**不要关 `CONFIG_WATCHDOG_CORE`**。SP805 看门狗是这颗 SoC 唯一的
+  复位通道，panic 后靠它重启；把它连带关掉会很难查。
+
+### 16. 想继续压体积，该看哪里
+
+- 先看 Release 里的 `config-7.4.*`（本次真正生效的 .config）：**只关 `=y` 的项**，
+  `=m` 的驱动对 Image 体积零贡献。
+- 再看流水线两节报告：「裁剪层逐行自检」告诉你哪些还没关上；「体积构成」列出
+  最大的 30 个内置 `.o` 与各顶层目录占用，直接指出下一刀该砍在哪。
+- 已知大头（arm64 默认配置里都是 `=y`）：53 个 `ARCH_*` 平台、`ACPI`、`PCI`、
+  `KVM`/`XEN`/`VIRTUALIZATION`、`IPV6`、`NETFILTER`、`ATA`、`MD`、`NFS_FS`、
+  `SQUASHFS`、`FB`、`BPF_SYSCALL`、`MEMCG`/`BLK_CGROUP`、`KEXEC`、
+  `TEE`/`OPTEE`、`STAGING`、`HIBERNATION`、`KALLSYMS_ALL` —— v11 的
+  `slim.config` 已把这一批关掉。
+- 仍不够时的下一批候选：`KALLSYMS` 本体（会失去 oops 函数名解析，带板阶段不划算）、
+  用不到的 `CRYPTO` 算法、`SOUND` 里的非 USB 部分。
+
 ---
 
 ## 二、刷写与启动阶段

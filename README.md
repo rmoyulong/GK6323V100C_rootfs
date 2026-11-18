@@ -70,10 +70,21 @@ USB `f9880000`/`f9890000`），但 **CPU 核与中断控制器是根本性不同
 3. 也可以在改动 `gk6323v100c.config`、`slim.config`、`apply_histb_patches.sh`、`dts/*.dts`
    或本workflow时自动触发。
 
-> **配置分层说明**：`gk6323v100c.config` 只放"要打开什么功能"的正向配置（=y/=m）；
-> `slim.config` 只放"要关闭什么无关项"的裁剪配置（# CONFIG_xxx is not set），
-> 专门负责把其他arm64平台、非必需驱动、调试功能关掉，把Image体积压到13MiB以内。
-> 编译后若还有未生效项或体积超标，只需要在slim.config里加对应行即可，不用改功能配置。
+> **配置分层说明（两层职责必须分清）**：
+> `gk6323v100c.config` = 功能层，**只写「要打开什么」**（`CONFIG_X=y` / `=m` / `="串"`）；
+> `slim.config` = 裁剪层，**只写「要关掉什么」**（`# CONFIG_X is not set`）。
+> 合并顺序：`defconfig` → 功能层 → 裁剪层 → `olddefconfig`，裁剪层必须在功能层之后。
+>
+> 流水线的**「配置分层纪律自检」**把这条钉死，违反即中止构建：裁剪层出现
+> `=y`/`=m`、功能层出现 `# … is not set`、或两层写了**同一个符号**，都会直接
+> 报错并打印行号。2026-11-19 那次失败正是两层互抢 `CONFIG_NTFS3_FS`、
+> `CONFIG_FB`、`CONFIG_MSDOS_FS`、`CONFIG_NLS_CODEPAGE_437`、
+> `CONFIG_DEBUG_INFO_NONE`，谁生效只取决于文件顺序。
+>
+> 想继续压体积时：从 Release 下载 `config-7.4.*`（本次实际生效的 .config），
+> 在里面搜到想关的符号、**确认它是 `=y`**，再往 `slim.config` 加一行即可 ——
+> 不必改 workflow，也不必动功能层。`=m` 的项不用关：模块不进 Image，
+> 对 U-Boot 那道体积上限零贡献。
 
 流水线里会做这些把关：设备树静态校验（漏分号 / label 未定义 / 节点地址与
 reg 不符）→ **从补丁库 baseline 自动读取内核版本与基线 commit** → 内核版本与
@@ -90,13 +101,22 @@ reg 不符）→ **从补丁库 baseline 自动读取内核版本与基线 commi
 
 | 小节 | 判什么 | 没通过意味着什么 |
 | --- | --- | --- |
+| 配置分层纪律自检 | 两层是否各守本分、有没有抢同一个符号 | **直接中止构建**，并打印违规行号 |
 | 必须项 | 少一项这台机器就起不来或目标落空 | **直接中止构建** |
 | 期望项 | 功能相关符号是否生效 | 只告警；会自动打印该符号的 Kconfig 定义，并区分「只是被关掉」与「内核树里没这个符号」 |
 | 已移除符号报告 | 补丁库已不再提供的符号（如 `HISI_FESTA_PHY`）在树里是否存在 | 仅报告，不中止 |
 | 派生符号报告 | 无 prompt 符号（`SND_PCM`、`SND_TIMER`、`ARM_GIC_V3_ITS` 等）的实际取值 | 仅报告。这类符号写进叠加层也改不动，所以叠加层里根本不写 |
+| 单板配置层逐行自检 | 功能层每一行是否真的落到最终 `.config` | 只告警；`=m` 行按 `[ym]` 判定（被 select 提升为 y 属正常） |
+| 裁剪层逐行自检 | 裁剪层每一行是否真的关上了 | 只告警；区分「仍是 y/m（多为被 select 拉起）」与「内核树无此符号」两种情形 |
 
-两个已经踩过、已经修掉的坑：
+三个已经踩过、已经修掉的坑：
 
+- **`yes "" | make … olddefconfig` 会让整个步骤自杀**。步骤开着 `set -o pipefail`，
+  而 `olddefconfig` 是非交互的、根本不读 stdin：make 先退出，`yes` 随即收到
+  SIGPIPE，整条管道返回非零，`set -e` 立刻杀掉步骤 —— 日志里只有
+  `yes: standard output: Broken pipe` 和 `exit code 1`，后面的检查一个字都没跑。
+  v11 已删掉这段管道。实测 `set -euo pipefail; yes "" | true` 退出码 1，
+  去掉 pipefail 为 0。
 - 自检取值统一走 `lookup()`。此前写成 `CUR="$(grep … | head -1)"`，一旦某符号在
   `.config` 里一行都没有，`set -euo pipefail` 会让整个步骤**静默退出**，日志只剩
   `exit code 1`，既没有告警也没有诊断。

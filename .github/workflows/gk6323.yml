@@ -198,11 +198,59 @@ jobs:
           # arm64 通用默认配置 → 叠加单板功能配置 → 叠加体积裁剪配置 → 让 kconfig 补依赖
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" defconfig
           ./scripts/kconfig/merge_config.sh -m .config "../$FRAGMENT"
-          # 二次裁剪：单独放 slim.config 里维护，所有要手动关掉的非必要选项都写在这里
-          # 来源：编译后 .config 里所有 =y 的非必须项，逐条验证后关闭，目标 Image <= 13MiB
+          # 二次裁剪：单独放 slim.config 里维护，**只写「关掉什么」**
           echo "=== 应用体积裁剪配置 slim.config ==="
           ./scripts/kconfig/merge_config.sh -m .config "../slim.config"
-          yes "" | make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+
+          # ★ 这里绝不能再写成 `yes "" | make … olddefconfig`。
+          #   olddefconfig 是非交互的，根本不读 stdin。2026-11-19 那次构建就栽在这：
+          #   make 先退出，yes 接着往管道里写、收到 SIGPIPE，在 set -o pipefail 之下
+          #   整条管道返回非零，set -e 立刻杀掉本步骤 —— 日志里只剩一句
+          #       yes: standard output: Broken pipe
+          #   紧跟着 "Process completed with exit code 1"，后面的检查一个字都没跑，
+          #   分不清是配置写错还是脚本自杀。
+          #   实测：`set -euo pipefail; yes "" | true` 退出码 1；去掉 pipefail 则为 0。
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+
+          # ============================================================
+          # 配置分层纪律自检：功能层只开、裁剪层只关、两层不许抢同一个符号
+          #
+          # 2026-11-19 日志里那 8 条
+          #   Value of CONFIG_xxx is redefined by fragment ../slim.config
+          # 不是错误（merge_config 的正常提示），但它暴露出真问题：两个文件同时写了
+          # CONFIG_NTFS3_FS、CONFIG_FB、CONFIG_MSDOS_FS、CONFIG_NLS_CODEPAGE_437、
+          # CONFIG_DEBUG_INFO_NONE 等，谁生效只取决于文件顺序。
+          # 这条自检把它钉死，违反即中止，不再靠人眼。
+          # ============================================================
+          echo "=== 配置分层纪律自检 ==="
+          DISC=0
+          if grep -qE '^CONFIG_[A-Z0-9_]+=[ym]$' "../slim.config"; then
+            echo "::error::slim.config（裁剪层）里出现了启用行 —— 它只允许写「关掉」"
+            grep -nE '^CONFIG_[A-Z0-9_]+=[ym]$' "../slim.config" | sed 's/^/    /'
+            DISC=1
+          fi
+          if grep -qE '^# CONFIG_[A-Z0-9_]+ is not set$' "../$FRAGMENT"; then
+            echo "::error::$FRAGMENT（功能层）里出现了关闭行 —— 裁剪项应写在 slim.config"
+            grep -nE '^# CONFIG_[A-Z0-9_]+ is not set$' "../$FRAGMENT" | sed 's/^/    /'
+            DISC=1
+          fi
+          grep -E '^CONFIG_[A-Z0-9_]+=' "../$FRAGMENT" \
+            | sed 's/^\(CONFIG_[A-Z0-9_]*\)=.*/\1/' | sort -u > /tmp/layer.board
+          grep -E '^# CONFIG_[A-Z0-9_]+ is not set$' "../slim.config" \
+            | sed 's/^# \(CONFIG_[A-Z0-9_]*\).*/\1/' | sort -u > /tmp/layer.slim
+          # 注意：这里先把 comm 的结果落盘再判断，不用 `comm … | grep -q .`
+          # —— 后者在 pipefail 下同样可能被 SIGPIPE 坑成假阴性。
+          comm -12 /tmp/layer.board /tmp/layer.slim > /tmp/layer.overlap || true
+          if [ -s /tmp/layer.overlap ]; then
+            echo "::error::下列符号被两层同时写到（谁生效取决于文件顺序）："
+            sed 's/^/    /' /tmp/layer.overlap
+            DISC=1
+          fi
+          if [ "$DISC" -ne 0 ]; then
+            echo "::error::配置分层纪律自检未通过，已中止（见 docs/troubleshooting.md 构建阶段第 13 条）"
+            exit 1
+          fi
+          echo "OK   功能层 $(wc -l < /tmp/layer.board) 个启用项、裁剪层 $(wc -l < /tmp/layer.slim) 个关闭项，无重叠"
 
           # 说明：$FRAGMENT 本身已包含下列全部项目，这里的 scripts/config
           # 只是防止叠加过程中丢项，符号名以内核 Kconfig 为准
@@ -237,7 +285,9 @@ jobs:
           scripts/config --enable NET_VENDOR_HISILICON
           scripts/config --enable HISI_FEMAC
           scripts/config --enable MDIO_HISI_FEMAC
-          scripts/config --enable HISI_FESTA_PHY
+          # HISI_FESTA_PHY：补丁库 rc3 起整库已无此符号，写在这里只会往 .config
+          # 里塞一行无主键、随后被 olddefconfig 丢掉。已删除，改由「已移除符号
+          # 报告」一节持续盯它 —— 驱动一旦回到补丁库就能立刻看到。
           # I2C / GPIO / SPI / RTC / 看门狗 / 帧缓冲
           scripts/config --enable I2C
           scripts/config --enable I2C_HIX5HD2
@@ -249,8 +299,14 @@ jobs:
           scripts/config --enable RTC_DRV_PCF8563
           scripts/config --enable WATCHDOG
           scripts/config --enable ARM_SP805_WATCHDOG
-          scripts/config --enable FB
-          scripts/config --enable FB_SIMPLE
+          # 带板调试：保留 debugfs。要读 /sys/kernel/debug/clk/clk_summary 才能查明
+          # eMMC / CRU 的时钟到底有没有被引导器打开 —— 这是能不能进系统的那一关，
+          # 而 debugfs 本身几乎不占体积，不能关。
+          scripts/config --enable DEBUG_FS
+          # 帧缓冲：本机第一阶段没有显示驱动、设备树里也没有 simple-framebuffer 节点，
+          # 控制台走串口 PL011。原本这里的 --enable FB / --enable FB_SIMPLE 与裁剪层
+          # 的 `# CONFIG_FB is not set` 正好互相矛盾（谁生效只看文件顺序），
+          # 现两者一并删除，FB 保持关闭，省下的体积留给内核本体。
           # USB 主控（本板设备树里只有 EHCI/OHCI，无 xhci）
           # ★ PHY_HISI_INNO_USB2 的父符号
           scripts/config --enable GENERIC_PHY
@@ -334,7 +390,7 @@ jobs:
                    GENERIC_PHY USB_PHY \
                    USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
                    I2C_HIX5HD2 GPIO_PL061 SPI_PL022 RTC_DRV_PCF8563 ARM_SP805_WATCHDOG \
-                   FB_SIMPLE \
+                   DEBUG_FS MII \
                    SND SND_USB \
                    NLS NLS_UTF8 NLS_CODEPAGE_936; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
