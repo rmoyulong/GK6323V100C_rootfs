@@ -201,10 +201,10 @@ jobs:
           locale-gen zh_CN.UTF-8
 
           git clone https://github.com/rmoyulong/packages_lang_golang golang
-          cd golang
-          zip -s 0 lms_arm.zip --out lms_arm_full.zip
-          unzip lms_arm_full.zip
-          cd ..
+          #cd golang
+          #zip -s 0 lms_arm.zip --out lms_arm_full.zip
+          #unzip lms_arm_full.zip
+          #cd ..
 
           rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
 
