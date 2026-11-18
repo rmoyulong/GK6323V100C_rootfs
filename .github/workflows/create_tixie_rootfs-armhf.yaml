@@ -254,10 +254,6 @@ jobs:
           mkdir -p /var/lib/squeezeboxserver/prefs
           mkdir -p /var/lib/squeezeboxserver/cache
           mkdir -p /var/log/squeezeboxserver
-          
-          sudo chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
-          sudo chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
-          sudo chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
 
           dpkg -i ./golang/lms_arm.deb || true
           apt-get --fix-broken install -y
