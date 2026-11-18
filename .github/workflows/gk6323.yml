@@ -3,27 +3,31 @@ name: GK6323V100C 内核自动构建
 # ============================================================
 # 本文件与 hi3798mv100 仓库的 hisi.yml 逐段同构：
 #   拉源码 → 打 histb 补丁 → 部署配置并逐项自检 → 编译
-#   → 追加设备树、包 uImage → 收模块 → 上传产物 → 发布 Release
+#   → 编译自带设备树、追加到内核镜像、包 uImage
+#   → 收模块 → 上传产物 → 发布 Release
 #
 # 与 hisi.yml 的差别只有 5 处，其余照搬：
 #   1) ARCH=arm64，交叉工具链 aarch64-linux-gnu-
 #   2) 内核是 arch/arm64/boot/Image，uImage 用 -A arm64 打包
-#   3) 设备树同样追加到内核镜像末尾（对应 mv100 把 dtb 追加到
-#      zImage 末尾），追加处校验魔数 d00dfeed；同时把该 dtb 单独
-#      放进 Release，供 dtbo 分区（/dev/mmcblk0p10）使用
-#   4) 单板配置多一项 CONFIG_SND_USB_AUDIO=y —— 本仓库存在的理由
+#   3) 设备树用它自己那份（dts/gk6323v100c-chaoge-z71a.dts，逐项取自
+#      真机），追加到内核镜像末尾，追加处校验魔数 d00dfeed；同时把
+#      该 dtb 单独放进 Release，必须写入 dtbo 分区（/dev/mmcblk0p10）
+#   4) 单板配置多一项 CONFIG_SND_USB_AUDIO=m —— 本仓库存在的理由
 #   5) 刷写分区：boot = /dev/mmcblk0p15（60M，起始 112M）
 #
 # 基线（与 mv100 仓库逐字一致）：
 #   KERNEL_VERSION = 7.4-rc3
 #   BASE_SHA       = 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
 #
-# 两点必须知道的事（详见 README）：
-#   a) 本基线是 histb 主线，不是作者那版国科 BSP 内核
-#      （6.18.46-gk6323-debian）。产出的内核版本号因此是 7.4.x，
-#      模块装到 /lib/modules/7.4.x 下 —— 内核与模块必须一起替换。
-#   b) 追加进内核镜像的设备树能否被引导器采用，取决于引导器；
-#      所以同名 dtb 同时单独发布，必要时写入 dtbo 分区。
+# 三点必须知道的事（详见 README）：
+#   a) 这台不是海思 MV200H。真机实测为 4×Cortex-A55 + GICv3 +
+#      国科私有 CRU，所以设备树用仓库自带的 gk6323v100c-chaoge-z71a.dts，
+#      **不再**用补丁库里海思 A53 的 mv200h 板级 dts（用错会红灯循环重启）。
+#   b) 本基线是主线内核，不是作者那版国科 BSP 内核（6.18.46-gk6323-debian）。
+#      产出内核版本号因此是 7.4.x，模块装到 /lib/modules/7.4.x 下 ——
+#      内核与模块必须一起替换。
+#   c) 真机运行的设备树来自 dtbo 分区（作者 boot.img 内没有 dtb）。因此
+#      编译出的 dtb **必须写入 dtbo 分区**才能生效；内嵌的那份是冗余备份。
 # ============================================================
 
 on:
@@ -33,6 +37,8 @@ on:
       - '.github/workflows/gk6323.yml'
       - 'gk6323v100c.config'
       - 'apply_histb_patches.sh'
+      - 'dts/*.dts'
+      - 'dts/check-dts.py'
   workflow_dispatch:
 
 permissions:
@@ -46,7 +52,7 @@ jobs:
       ARCH: arm64
       CROSS_COMPILE: aarch64-linux-gnu-
       KERNEL_REPO: https://github.com/torvalds/linux.git
-      # 补丁仓库（与 hi3798mv100 用同一个库）
+      # 补丁仓库（与 hi3798mv100 用同一个库；本机只取其 i2c/femac 等共用 IP 修正）
       PATCHES_REPO: https://github.com/rmoyulong/histb-mainline_patches
       # 与补丁库 baseline 逐字一致
       PATCHES_BASE_SHA: 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
@@ -54,8 +60,9 @@ jobs:
       # uImage 头内地址，与实机 boot.img 实测一致
       UIMAGE_LOADADDR: "0x02000000"
       UIMAGE_ENTRYADDR: "0x02000000"
-      # 目标单板设备树（补丁库新增的创维代工 mv200h 板级）
-      TARGET_DTB: hi3798mv200h-skyworth-stb.dtb
+      # 本仓库自带的板级设备树（逐项取自真机，不再用补丁库的 mv200h 板级）
+      BOARD_DTS: dts/gk6323v100c-chaoge-z71a.dts
+      TARGET_DTB: gk6323v100c-chaoge-z71a.dtb
       # 单板配置层
       FRAGMENT: gk6323v100c.config
       # 实机分区：boot 起始 112M、长 60M；dtbo 起始 50M、长 2M
@@ -72,11 +79,16 @@ jobs:
       - name: 校验必要文件存在
         run: |
           set -euo pipefail
-          for f in apply_histb_patches.sh "$FRAGMENT"; do
+          for f in apply_histb_patches.sh "$FRAGMENT" "$BOARD_DTS"; do
             [ -f "$f" ] || { echo "::error::根目录缺少 $f"; exit 1; }
           done
           chmod +x apply_histb_patches.sh
-          ls -lh apply_histb_patches.sh "$FRAGMENT"
+          ls -lh apply_histb_patches.sh "$FRAGMENT" "$BOARD_DTS"
+
+      - name: 设备树静态校验（无 dtc 也能查出漏分号、label 未定义、地址不符）
+        run: |
+          set -euo pipefail
+          python3 dts/check-dts.py "$BOARD_DTS"
 
       - name: 安装 ARM64 交叉编译依赖
         run: |
@@ -88,6 +100,7 @@ jobs:
             u-boot-tools device-tree-compiler quilt git wget xz-utils \
             cpio rsync zstd
           aarch64-linux-gnu-gcc --version | sed -n '1p'
+          dtc --version
 
       - name: 拉取内核源码（匹配补丁基线 commit）
         run: |
@@ -97,7 +110,7 @@ jobs:
           cd linux_build
           git checkout -q "$PATCHES_BASE_SHA"
 
-          # 规范化：7.4.0-rc2 -> 7.4-rc3，使两种写法等价
+          # 规范化：7.4.0-rc2 -> 7.4-rc2，使两种写法等价
           norm() { printf '%s' "$1" | sed -E 's/^([0-9]+\.[0-9]+)\.0/\1/'; }
           ACT="$(make -s kernelversion)"
           EXP="$PATCHES_KERNEL_VERSION"
@@ -135,24 +148,9 @@ jobs:
           # 该脚本自判：有 series 按 series，没有则按文件名序号应用全部 *.patch；
           # 等价于 quilt --fuzz=0，遇冲突即中止并回滚，不会静默产出缺补丁的内核
           PATCHES_DIR="../histb-patches" CI=true bash ../apply_histb_patches.sh -y
-          echo "=== 板级 dts 检查（arm64）==="
-          ls arch/arm64/boot/dts/hisilicon/hi3798mv200*.dts 2>/dev/null || true
-          grep -l "skyworth" arch/arm64/boot/dts/hisilicon/*.dts 2>/dev/null || true
-          [ -f "arch/arm64/boot/dts/hisilicon/$TARGET_DTB" ] || \
-            [ -f "arch/arm64/boot/dts/hisilicon/${TARGET_DTB%.dtb}.dts" ] || {
-              echo "::error::补丁库里没有 $TARGET_DTB 对应的板级 dts，说明该补丁库未包含 arm64 的 mv200h 支持"
-              exit 1
-            }
+          echo "=== 补丁后确认 ===（本仓库设备树自带，不再要求补丁库含 mv200h 板级 dts）"
+          ls arch/arm64/boot/dts/hisilicon/ | head -20 || true
 
-      - name: 恢复 ccache 缓存
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: "${{ runner.os }}-ccache-${{ env.PATCHES_KERNEL_VERSION }}-${{ github.sha }}"
-          restore-keys: |
-            ${{ runner.os }}-ccache-${{ env.PATCHES_KERNEL_VERSION }}-
-            ${{ runner.os }}-ccache-
-            
       - name: 部署内核配置并强制关键驱动内置
         run: |
           set -euo pipefail
@@ -166,22 +164,26 @@ jobs:
           # 只是防止叠加过程中丢项，符号名以内核 Kconfig 为准
           scripts/config --enable ARCH_HISI
           scripts/config --enable OF
-          # eMMC：(compatible = "hisilicon,hi3798cv200-dw-mshc")
+          # 中断控制器 / 定时器（真机是 GICv3 + A55，不是 GIC-400 + A53）
+          scripts/config --enable ARM_GIC
+          scripts/config --enable ARM_GIC_V3
+          scripts/config --enable ARM_ARCH_TIMER
+          # 控制台串口
+          scripts/config --enable SERIAL_AMBA_PL011
+          scripts/config --enable SERIAL_AMBA_PL011_CONSOLE
+          # eMMC：(设备树追加 "snps,dw-mshc") → pltfm + dw
           scripts/config --enable MMC
           scripts/config --enable MMC_BLOCK
           scripts/config --enable MMC_DW
           scripts/config --enable MMC_DW_PLTFM
-          scripts/config --enable MMC_DW_HI3798CV200
-          # 控制台串口
-          scripts/config --enable SERIAL_AMBA_PL011
-          scripts/config --enable SERIAL_AMBA_PL011_CONSOLE
           # 根文件系统（NLS 是 NLS_CODEPAGE_* 的父符号）
           scripts/config --enable EXT4_FS
           scripts/config --enable NLS
-          # 命令行分区表：本机 root= 与全部 18 个分区都由 bootargs 里的 blkdevparts= 下发
-          # ★ 必须先开父菜单 PARTITION_ADVANCED：CMDLINE_PARTITION 的 prompt 条件是
-          #   "if PARTITION_ADVANCED"，父项为 n 时它成了无 prompt 符号，这一行会被
-          #   olddefconfig 丢弃，构建随后停在「必须项」一节（本仓库踩过这个坑）
+          # 命令行分区表：本机 root= 与全部 18 个分区都由 bootargs 里的
+          # blkdevparts= 下发
+          # ★ 必须先开父菜单 PARTITION_ADVANCED：CMDLINE_PARTITION 的 prompt
+          #   条件是 "if PARTITION_ADVANCED"，父项为 n 时它成了无 prompt 符号，
+          #   这一行会被 olddefconfig 丢弃，构建随后停在「必须项」一节
           scripts/config --enable PARTITION_ADVANCED
           scripts/config --enable MSDOS_PARTITION
           scripts/config --enable CMDLINE_PARTITION
@@ -190,7 +192,20 @@ jobs:
           scripts/config --enable NET_VENDOR_HISILICON
           scripts/config --enable HISI_FEMAC
           scripts/config --enable HISI_FESTA_PHY
-          # USB 主控（本板设备树里 xhci 是注释掉的，只有 EHCI/OHCI）
+          # I2C / GPIO / SPI / RTC / 看门狗 / 帧缓冲
+          scripts/config --enable I2C
+          scripts/config --enable I2C_HIX5HD2
+          scripts/config --enable GPIOLIB
+          scripts/config --enable GPIO_PL061
+          scripts/config --enable SPI
+          scripts/config --enable SPI_PL022
+          scripts/config --enable RTC_CLASS
+          scripts/config --enable RTC_DRV_PCF8563
+          scripts/config --enable WATCHDOG
+          scripts/config --enable ARM_SP805_WATCHDOG
+          scripts/config --enable FB
+          scripts/config --enable FB_SIMPLE
+          # USB 主控（本板设备树里只有 EHCI/OHCI，无 xhci）
           # ★ PHY_HISI_INNO_USB2 的父符号
           scripts/config --enable GENERIC_PHY
           scripts/config --enable USB_PHY
@@ -202,9 +217,6 @@ jobs:
           scripts/config --enable USB_STORAGE
           # ALSA 骨架补项
           scripts/config --enable SND_TIMER
-          # 板载音频（Histb AIAO，走 I2S / ES8316 那一路）
-          scripts/config --enable SND_SOC_HISTB_AIAO_I2S
-          scripts/config --enable SND_SOC_HISTB_AIAO_CARD
           # ★ 本仓库存在的理由：USB 声卡 / USB DAC
           scripts/config --enable SND_USB
           # ★ 这里必须用 --module，不能用 --enable：--enable 对 tristate 符号等于设成 y，
@@ -220,8 +232,8 @@ jobs:
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
           echo "=== 必须项：少一项这台机器就起不来或目标落空，直接中止 ==="
-          for s in ARCH_HISI SERIAL_AMBA_PL011_CONSOLE \
-                   MMC_BLOCK MMC_DW_HI3798CV200 \
+          for s in ARCH_HISI ARM_GIC_V3 ARM_ARCH_TIMER SERIAL_AMBA_PL011_CONSOLE \
+                   MMC_BLOCK MMC_DW_PLTFM \
                    EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
                    NET_VENDOR_HISILICON PHYLIB HISI_FEMAC \
                    USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES; do
@@ -247,14 +259,14 @@ jobs:
 
           echo "=== 期望项：没生效只告警（可能依赖未满足或被改名）==="
           for s in OF SERIAL_AMBA_PL011 \
-                   MMC MMC_DW MMC_DW_PLTFM \
+                   MMC MMC_DW \
                    HISI_FESTA_PHY \
                    GENERIC_PHY USB_PHY \
                    USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
-                   SND SND_TIMER SND_PCM SND_SOC SND_USB SND_HWDEP SND_RAWMIDI \
-                   NLS NLS_UTF8 NLS_CODEPAGE_936 \
-                   SND_SOC_HISTB_AIAO_I2S SND_SOC_HISTB_AIAO_CARD \
-                   COMMON_CLK_HI3798MV200 PINCTRL_HISTB PINCTRL_HI3798MV2X; do
+                   I2C_HIX5HD2 GPIO_PL061 SPI_PL022 RTC_DRV_PCF8563 ARM_SP805_WATCHDOG \
+                   FB_SIMPLE \
+                   SND SND_TIMER SND_PCM SND_USB SND_HWDEP SND_RAWMIDI \
+                   NLS NLS_UTF8 NLS_CODEPAGE_936; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
             else
@@ -295,7 +307,7 @@ jobs:
           echo "=== 最终内核版本 ==="
           make -s ARCH="$ARCH" kernelrelease
 
-      - name: 编译内核、设备树、模块
+      - name: 编译内核与模块
         run: |
           set -euo pipefail
           cd linux_build
@@ -303,9 +315,30 @@ jobs:
           ccache --max-size=5G
           ccache -z
           make -j"$(nproc)" ARCH="$ARCH" CROSS_COMPILE="ccache $CROSS_COMPILE" Image
-          make -j"$(nproc)" ARCH="$ARCH" CROSS_COMPILE="ccache $CROSS_COMPILE" dtbs
           make -j"$(nproc)" ARCH="$ARCH" CROSS_COMPILE="ccache $CROSS_COMPILE" modules
           ccache -s
+
+      - name: 编译仓库自带的 GK6323V100C 设备树
+        run: |
+          set -euo pipefail
+          OUT="linux_build/arch/arm64/boot/dts/hisilicon/$TARGET_DTB"
+          mkdir -p "$(dirname "$OUT")"
+          # 优先用内核树自带的 dtc（与内核同源），没有则用系统 dtc
+          DTC="linux_build/scripts/dtc/dtc"
+          [ -x "$DTC" ] || DTC="$(command -v dtc)"
+          echo "使用 dtc：$DTC"
+          "$DTC" -@ -I dts -O dtb -o "$OUT" "$BOARD_DTS"
+          echo "=== 反编译回读关键项，确认编译结果与真机一致 ==="
+          "$DTC" -I dtb -O dts "$OUT" > /tmp/rt.dts
+          for k in "arm,cortex-a55" "arm,gic-v3" "arm,pl011" "snps,dw-mshc" "gk6323v100c"; do
+            if grep -q "$k" /tmp/rt.dts; then
+              echo "OK   $k"
+            else
+              echo "::error::编译后的 dtb 缺少 $k"
+              exit 1
+            fi
+          done
+          ls -l "$OUT"
 
       - name: 追加设备树并打包 uImage
         run: |
@@ -315,7 +348,6 @@ jobs:
           DTB="arch/arm64/boot/dts/hisilicon/$TARGET_DTB"
           if [ ! -f "$DTB" ]; then
             echo "::error::设备树不存在: $DTB"
-            ls arch/arm64/boot/dts/hisilicon/hi3798mv200*.dtb
             exit 1
           fi
 
@@ -354,7 +386,8 @@ jobs:
           KREL="$(make -s ARCH="$ARCH" kernelrelease)"
           cp arch/arm64/boot/boot.img out/boot.img
           cp arch/arm64/boot/Image out/Image
-          cp arch/arm64/boot/dts/hisilicon/*.dtb out/
+          # 单独发一份 dtb：真机运行时的设备树来自 dtbo 分区，这一份必须写入 p10
+          cp "arch/arm64/boot/dts/hisilicon/$TARGET_DTB" out/
           cp .config "out/config-$KREL"
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$PWD/out/_mod" modules_install
           rm -f out/_mod/lib/modules/*/build out/_mod/lib/modules/*/source

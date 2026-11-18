@@ -57,8 +57,8 @@ done
 if [ -n "$MODEL" ]; then
   echo "    设备树 model：$MODEL"
   case "$MODEL" in
-    *3798mv200h*|*skyworth*|*MV200H*) ok "板级设备树是 mv200h / 创维 这一支" ;;
-    *) ng "设备树 model 不是 mv200h 这一支，dtb 可能没换" ;;
+    *Z71A*|*GK6323V100C*|*gk6323v100c*) ok "板级设备树是本机型（GK6323V100C / Z71A）" ;;
+    *) ng "设备树 model 不是本机型，dtb 可能没换" ;;
   esac
 else
   sk "读不到设备树 model 节点"

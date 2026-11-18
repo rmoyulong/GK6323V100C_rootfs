@@ -1,129 +1,156 @@
-# GK6323V100C 主线内核：构建 + 刷写 + 实机验证
+# GK6323V100C 内核（USB 声卡支持）—— 构建与刷写
 
-面向国科微 GK6323V100C 机顶盒（硅片等同海思 Hi3798MV200H / MV310，ARM64）的内核仓库：
-在 GitHub Actions 上拉取源码、应用 histb 补丁，编译出可直接刷入的 `uImage` 与内核模块，
-刷写方式与输出格式同 hi3798mv100 那套仓库。
-
-**为什么有这个仓库**：作者那版 Debian 用的 BSP 内核（`6.18.46-gk6323-debian`）是纯内置内核
-（`/proc/modules` 不存在），并且没有编入 USB 音频驱动，插上 USB 声卡能被枚举、却没有驱动接管，
-出不了声。本仓库在 histb 主线上把 USB 音频打开，并把内核与模块一起产出。
+面向国科微 GK6323V100C 机顶盒（整机型号 ChaoGe Z71A）的自编译 ARM64 内核。
+产物形态与 [hi3798mv100 仓库](https://github.com/rmoyulong/hi3798mv100) 一致：
+**一个内嵌设备树的 uImage 内核 + 一份内核模块**。
 
 ---
 
-## 一、仓库结构
+## 一、先说清楚：这台机器不是海思 MV200H
 
-```
-.
-├── .github/workflows/gk6323.yml   # 构建流水线：拉源码 → 打补丁 → 配置自检 → 编译 → 打包 → 发布 Release
-├── gk6323v100c.config             # 单板配置叠加层（USB 音频就是在这里打开的）
-├── apply_histb_patches.sh         # 补丁应用脚本（有 series 按 series，否则按文件名序号）
-├── scripts/
-│   ├── flash-boot.sh              # 目标机上刷写 boot 分区（可选写 dtbo）＋安装模块
-│   └── verify-device.sh           # 目标机上一条命令自检
-├── docs/
-│   ├── build-and-flash.md         # 从构建到刷写的完整步骤
-│   └── troubleshooting.md         # 踩过的坑与排查办法
-└── .gitignore
-```
+早前把 GK6323V100C 当成"硅片等同海思 Hi3798MV200H（4×A53 + GIC-400）"，
+这个判断是**错的**。数据取自真机运行中的原厂内核（真机导出的设备树 +
+`/proc/cpuinfo`）：
 
-三处触发路径固定为 `gk6323v100c.config`、`apply_histb_patches.sh`、`.github/workflows/gk6323.yml`，
-改动其中任一文件即自动触发构建，也可以在 Actions 页面手动触发。
+| 项目 | 真机 GK6323V100C（本仓库目标） | 海思 Hi3798MV200H（此前误判） |
+| --- | --- | --- |
+| 根 compatible | `chaoge,z71a` / `goke,gk6323v100c` | `hisilicon,hi3798mv200` |
+| CPU | 4×`arm,cortex-a55`（part 0xd05） | 4×`arm,cortex-a53` |
+| 中断控制器 | `arm,gic-v3`（GICD 0xf1000000 / GICR 0xf1040000） | `arm,gic-400` |
+| PSCI | `arm,psci-0.2` | `arm,psci-1.0` |
+| 时钟/复位 | `goke,gk6323v100c-cru`（国科私有） | `hisilicon,hi3798mv200-crg` |
+| 内存 | 2 GiB（真机 MemTotal 2018984 kB） | 机型而异 |
+
+外设 IP 地址确实相像（UART `f8b00000`、eMMC `f9830000`、网口 `f9c30000`、
+USB `f9880000`/`f9890000`），但 **CPU 核与中断控制器是根本性不同**，
+拿海思 A53 的板级设备树去启动，GIC 初始化必然失败，表现就是**红灯循环重启**。
+
+所以本仓库的板级设备树是**自己写的**：`dts/gk6323v100c-chaoge-z71a.dts`，
+逐项取自真机，不套用海思的 `hi3798mv200h` 板级。
 
 ---
 
-## 二、与 hi3798mv100 的差别只有 5 处
+## 二、与 hi3798mv100 的差别（只有 5 处）
+
+流程、目录骨架、产物命名、刷写顺序都与 mv100 那套同构，实质差别如下：
 
 | 项目 | hi3798mv100 | 本仓库 |
 | --- | --- | --- |
-| 架构与工具链 | `ARCH=arm`，`arm-linux-gnueabihf-` | `ARCH=arm64`，`aarch64-linux-gnu-` |
-| 内核镜像 | `zImage`，包成 `-A arm` 的 uImage | `Image`，包成 `-A arm64` 的 uImage |
-| 设备树 | 追加在 `zImage` 末尾 | 追加在 `Image` 末尾，另单独发一份供 dtbo 分区用 |
-| 单板配置 | `kernel.config` | `gk6323v100c.config`（叠加层），多一项 USB 音频 |
-| 刷写分区 | `boot = /dev/mmcblk0p6` | `boot = /dev/mmcblk0p15`（60M），`dtbo = /dev/mmcblk0p10` |
-
-其余（基线、补丁库、打包地址、产物形态、发布流程、刷写顺序）全部照搬。
-
-一处写法上的差别值得留意：本仓库用**叠加层**而不是整份 `kernel.config`。好处是补丁新增的驱动符号
-（要打完补丁才在 Kconfig 里可见）不会丢；代价是**被 `if` 包住的符号必须连父菜单一起写**，漏写时
-子项会被 `olddefconfig` 静默丢弃，构建随后在「必须项」一节中止。这几对父符号见
-`docs/troubleshooting.md` 构建阶段第 4 条。
+| 架构与工具链 | `ARCH=arm` | `ARCH=arm64`，`aarch64-linux-gnu-` |
+| 内核镜像 | `zImage` → `-A arm` uImage | `Image` → `-A arm64` uImage |
+| 设备树 | 类同做法，追加到镜像末尾 | 追加到 `Image` 末尾，另单独发一份 |
+| 单板配置 | `kernel.config`（整份） | `gk6323v100c.config`（叠加层） |
+| 刷写分区 | `boot` | `boot = /dev/mmcblk0p15`，另有 `dtbo = /dev/mmcblk0p10` |
 
 ---
 
-## 三、快速开始
+## 三、产物
 
-### 1. 构建
+| 文件 | 用途 | 落到哪 |
+| --- | --- | --- |
+| `boot.img` | uImage 内核，设备树追加在镜像末尾 | `/dev/mmcblk0p15`（60M） |
+| `gk6323v100c-chaoge-z71a.dtb` | 设备树 | **必须**写 `/dev/mmcblk0p10`（2M，dtbo） |
+| `modules.tar.gz` | 内核模块 | 解到 `/` |
+| `Image` | 裸内核，仅核对用 | 不刷 |
+| `config-7.4.*` | 实际使用的内核配置 | 不刷 |
+| `sha256sums.txt` | 上述产物的校验值 | 不刷 |
+
+**为什么 dtb 必须单独写 dtbo 分区**：真机运行时用的设备树来自 dtbo 分区
+（作者原 `boot.img` 内并没有内嵌 dtb）。内嵌的那份是冗余备份；漏写 dtbo
+等于没换设备树，新内核照样起不来。
+
+---
+
+## 四、构建
+
+推到自己的 GitHub 仓库后：
+
+1. Settings → Actions → General → Workflow permissions 选 **Read and write**。
+2. Actions 里选「GK6323V100C 内核自动构建」→ Run workflow。
+3. 也可以在改动 `gk6323v100c.config`、`apply_histb_patches.sh`、`dts/*.dts`
+   或本workflow时自动触发。
+
+流水线里会做这些把关：设备树静态校验（漏分号 / label 未定义 / 节点地址与
+reg 不符）→ 内核版本与补丁基线核对 → 配置必须项硬校验 → 设备树追加处魔数
+必须是 `d00dfeed` → 编译后的 dtb 反编译回读，确认含 `cortex-a55`、`gic-v3`、
+`pl011`、`snps,dw-mshc`、`gk6323v100c` → 镜像不得超 60M。
+
+---
+
+## 五、刷写（顺序不可颠倒）
 
 ```bash
-git init -b main
-git add -A
-git commit -m "GK6323V100C kernel build"
-git remote add origin git@github.com:<你的账号>/<仓库名>.git
-git push -u origin main
-```
+# 0. 三个文件传到机器 /tmp：boot.img、gk6323v100c-chaoge-z71a.dtb、modules.tar.gz
 
-- **Settings → Actions → General → Workflow permissions** 选 **Read and write permissions**
-  （发布 Release 需要写权限）。
-- Actions → **GK6323V100C 内核自动构建** → **Run workflow**。
-- 成功后产出 `boot.img`、`modules.tar.gz`、`Image`、设备树、`config-*`、`sha256sums.txt`，
-  并自动创建 Release，标签形如 `gk6323v100c-7.4-rc2-b<N>`。
+# 1. 备份原 boot 分区
+sudo dd if=/dev/mmcblk0p15 of=/root/boot.bak bs=1M conv=fsync
 
-### 2. 刷入设备
+# 2. 先装模块（内核与模块必须同版本）
+cd / && sudo tar -xzf /tmp/modules.tar.gz && sync
 
-```bash
-# 把 Release 里的 boot.img 与 modules.tar.gz 传到盒子的 /tmp
-sudo bash scripts/flash-boot.sh -i /tmp/boot.img -m /tmp/modules.tar.gz
+# 3. 刷内核
+sudo dd if=/tmp/boot.img of=/dev/mmcblk0p15 bs=1M conv=fsync && sync
+
+# 4. 刷设备树 —— 本机型必须这一步
+sudo dd if=/tmp/gk6323v100c-chaoge-z71a.dtb of=/dev/mmcblk0p10 bs=1K conv=fsync && sync
+
+# 5. 重启
 sudo reboot
 ```
 
-先解压模块、后写 boot 分区的顺序由脚本保证，不要手工颠倒。只想先看一遍动作加 `-n`。
-脚本只碰 boot 分区，不碰 fastboot、bootargs、atf、trustedcore 这些底层分区。
+也可以用仓库里的脚本一次做完（带备份、大小校验、dry-run）：
 
-### 3. 验证
+```bash
+sudo bash scripts/flash-boot.sh -i boot.img -m modules.tar.gz \
+     -d gk6323v100c-chaoge-z71a.dtb -n      # 先 dry-run 看一遍
+sudo bash scripts/flash-boot.sh -i boot.img -m modules.tar.gz \
+     -d gk6323v100c-chaoge-z71a.dtb         # 确认无误后真正执行
+```
+
+---
+
+## 六、验证
+
+接 TTL 串口（**115200**）看启动日志，按停在哪一步定位：
+
+| 现象 | 说明 | 下一步 |
+| --- | --- | --- |
+| 一个字都没有 | DTB 或 GIC 初始化卡住 | 确认 dtbo 分区写的是新 dtb |
+| 出 `Booting Linux` + earlycon 后停住 | 时钟或 eMMC 未就绪 | 看 troubleshooting「启动阶段」第 2 条 |
+| 打印出 mmcblk0 分区表 | eMMC 通了 | 看根文件系统能否挂载 |
+| 进到 shell | 第一阶段完成 | 插 USB 声卡，`cat /proc/asound/cards` |
+
+起来后跑：
 
 ```bash
 sudo bash scripts/verify-device.sh
 ```
 
-七组检查、末尾给出 `PASS / FAIL / SKIP` 汇总，全通过时退出码为 0。
+其中会判定设备树是否为 `GK6323V100C / Z71A`、USB 声卡模块是否加载、
+`/proc/asound/cards` 是否多出 USB 卡。
 
 ---
 
-## 四、关键约定
+## 七、回滚
 
-| 项目 | 取值 | 说明 |
-| --- | --- | --- |
-| 内核基线 | `7.4-rc2` / commit `fd9230005e85` | 与 mv100 仓库同一 pin，也与补丁库 `baseline` 一致 |
-| 补丁库 | `histb-mainline_patches` | 严格应用，等价 `--fuzz=0`，冲突即回滚 |
-| 设备树 | `hi3798mv200h-skyworth-stb.dtb` | 补丁库新增的创维代工 mv200h 板级 |
-| uImage | 加载 / 入口 `0x02000000`，`-C none` | 设备树追加在 `Image` 末尾，校验魔数 `d00dfeed` |
-| USB 音频 | `CONFIG_SND_USB_AUDIO=m` | 与 mv100 的 `kernel.config` 同形态，是模块 |
-| 启动参数 | 内核内 `CONFIG_CMDLINE` 留空 | `root=` 与 `blkdevparts=` 由 bootargs 分区下发 |
-| boot 分区 | `/dev/mmcblk0p15` | 起始 112M、长 60M，刷入 `boot.img` |
-| dtbo 分区 | `/dev/mmcblk0p10` | 起始 50M、长 2M，需要时写入同一份 dtb |
-| 根分区 | `/dev/mmcblk0p18` | ext4，由 bootargs 中的 `root=` 指定 |
+```bash
+sudo dd if=/root/boot.bak of=/dev/mmcblk0p15 bs=1M conv=fsync && sync && reboot
+```
 
-升级内核版本时，只需把 `PATCHES_BASE_SHA` 与 `PATCHES_KERNEL_VERSION` 跟着补丁库
-`baseline` 一起改，其余步骤照跑。换成自己的补丁库 fork，改 `PATCHES_REPO` 即可。
+注意：本次同时改写了 dtbo 分区。回滚内核不会自动恢复原设备树；若手上有
+原机 `dtbo.img`，请一并写回 `/dev/mmcblk0p10`。手上没有原 dtbo 时，用
+`scripts/restore-stock.sh` 按提示操作。
 
 ---
 
-## 五、三件必须知道的事
+## 八、这一版的已知限制
 
-1. **内核版本号会变**。本基线是 histb 主线，不是作者那版国科 BSP 内核，产出内核自报
-   `7.4.x`，不再是 `6.18.46-gk6323-debian`；模块相应落在 `/lib/modules/7.4.x`。
-   **内核与模块必须一起替换**，只换其中一个不会生效。
-2. **内嵌的设备树能否生效取决于引导器**。设备树已按 mv100 的做法追加在内核镜像末尾，
-   但 arm64 上是否需要额外从 dtbo 分区读取，各家引导器行为不同；所以 Release 里同时
-   单独提供一份 dtb，必要时写入 `/dev/mmcblk0p10`。
-3. **USB 音频驱动是模块**。这与 mv100 的 `kernel.config` 形态一致，所以刷完内核还必须
-   解开 `modules.tar.gz`；`scripts/flash-boot.sh` 的顺序已经保证这一点。
-   要让它真以模块形态编出，CI 里那一行必须是 `scripts/config --module SND_USB_AUDIO`；
-   写成 `--enable`（对 tristate 等于设成 `y`）会把它编进内核，模块包里就没有它了。
-
----
-
-## 六、文档索引
-
-- [构建与刷写](docs/build-and-flash.md)
-- [故障排查](docs/troubleshooting.md)
+- **eMMC 依赖 bootloader 已配好的时钟**：国科私有 CRU 没有主线驱动，本版
+  把外设时钟改指 fixed-clock 并保持 `clk_ignore_unused`，能否起来取决于
+  引导器是否已把 SD/eMMC 时钟打开。这是第一版的最大不确定点。
+- **板载 ES8316 音频暂不可用**：它走国科 AIAO 控制器，主线无驱动；本版
+  设备树未包含该节点（保留给后续版本）。USB 声卡不受影响。
+- **内核版本号是 7.4.x**，不是作者那版 `6.18.46-gk6323-debian`，模块装在
+  `/lib/modules/7.4.x`，内核与模块必须一起替换。
+- CPU 变频（`goke,gk6323-cpufreq`）、红外、温度传感器同样缺少主线驱动，
+  本版未启用。

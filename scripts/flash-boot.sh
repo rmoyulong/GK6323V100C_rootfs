@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # ============================================================
-# GK6323V100C 目标机刷写脚本：先装模块，再写 boot 分区（可选写 dtbo）
+# GK6323V100C 目标机刷写脚本：先装模块，再写 boot 分区与 dtbo 分区
 #
 # 用法：
 #   sudo bash flash-boot.sh -i boot.img -m modules.tar.gz \
-#        [-d hi3798mv200h-skyworth-stb.dtb] [-p /dev/mmcblk0p15] [-D /dev/mmcblk0p10] [-n]
+#        -d gk6323v100c-chaoge-z71a.dtb [-p /dev/mmcblk0p15] [-D /dev/mmcblk0p10] [-n]
 #
 #   -i  uImage 内核镜像（Release 里的 boot.img）
 #   -m  内核模块包（Release 里的 modules.tar.gz）
-#   -d  设备树（可选；只有引导器不认内核内嵌 dtb 时才需要写 dtbo）
+#   -d  设备树（本机型必须给：真机用的是 dtbo 分区里的 dtb，不是内嵌那份）
 #   -p  boot 分区节点，默认 /dev/mmcblk0p15（起始 112M、长 60M）
 #   -D  dtbo 分区节点，默认 /dev/mmcblk0p10（起始 50M、长 2M）
 #   -n  只打印将要执行的动作，不落盘（先看一遍再加 sudo 执行）
@@ -156,5 +156,11 @@ fi
 
 echo
 echo "完成。现在可以 reboot。"
-echo "首次启动建议接 TTL 串口看输出；起来后跑一次 scripts/verify-device.sh。"
-echo "回滚：dd if=$BK of=$BOOT_PART bs=1M conv=fsync && sync && reboot"
+echo "首次启动建议接 TTL 串口（115200）看输出；起来后跑一次 scripts/verify-device.sh。"
+if [ -n "$DTB" ]; then
+  echo "提醒：本次已改写 $DTBO_PART，回滚内核不会自动恢复原设备树；"
+  echo "      若手上有原机 dtbo.img，请一并写回该分区。"
+else
+  echo "提醒：本次未写设备树（没给 -d）。若真机仍跑在原设备树上，新内核可能起不来。"
+fi
+echo "回滚内核：dd if=$BK of=$BOOT_PART bs=1M conv=fsync && sync && reboot"
