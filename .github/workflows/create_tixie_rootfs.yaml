@@ -146,7 +146,7 @@ jobs:
           WantedBy=multi-user.target
           EOF
           
-          sudo tee "$ROOTFS_DIR/etc/resize.sh" > /dev/null <<'EOF
+          sudo tee "$ROOTFS_DIR/etc/resize.sh" > /dev/null <<'EOF'
           #!/bin/bash
           set -euo pipefail
           
