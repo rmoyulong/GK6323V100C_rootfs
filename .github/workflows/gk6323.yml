@@ -71,6 +71,13 @@ jobs:
       BOOT_PART: /dev/mmcblk0p15
       BOOT_PART_LIMIT_MB: "60"
       DTBO_PART: /dev/mmcblk0p10
+      # ★ 与上面那个 60M 不是一回事：U-Boot 启动内核前会检查 uImage 数据大小，
+      #   超过它编译时的 CONFIG_SYS_BOOTM_LEN 就打印
+      #     "Image too large: increase CONFIG_SYS_BOOTM_LEN"
+      #   并复位（表现为红灯循环重启）。作者原厂 boot.img 14,028,808 字节可正常
+      #   启动，U-Boot 从 boot 分区读 30720 块 = 15,728,640 字节（15MiB），
+      #   故上限取 15MiB。超过这里就地中止，不产出刷进去会变砖的镜像。
+      BOOT_IMAGE_MAX_MB: "15"
 
     steps:
       - name: 检出仓库代码
@@ -396,15 +403,6 @@ jobs:
           echo "=== 最终内核版本 ==="
           make -s ARCH="$ARCH" kernelrelease
 
-      - name: 恢复 ccache 缓存
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: "${{ runner.os }}-ccache-${{ env.KERNEL_VERSION }}-${{ github.sha }}"
-          restore-keys: |
-            ${{ runner.os }}-ccache-${{ env.KERNEL_VERSION }}-
-            ${{ runner.os }}-ccache-
-            
       - name: 编译内核与模块
         run: |
           set -euo pipefail
@@ -468,13 +466,41 @@ jobs:
 
           echo "=== uImage 头信息 ==="
           mkimage -l arch/arm64/boot/boot.img
-          SIZE=$(stat -c%s arch/arm64/boot/boot.img)
-          LIMIT=$((BOOT_PART_LIMIT_MB * 1024 * 1024))
-          echo "boot.img 总大小：$SIZE 字节（boot 分区上限 $LIMIT 字节）"
-          if [ "$SIZE" -gt "$LIMIT" ]; then
-            echo "::error::boot.img 超过 boot 分区上限，不可刷入"
+
+          # 两个上限别混：① boot 分区容量 60M（写不写得进）
+          #              ② U-Boot 的 CONFIG_SYS_BOOTM_LEN（bootm 收不收）
+          # 上一轮就是栽在第 ② 条：U-Boot 打印
+          #   "Image too large: increase CONFIG_SYS_BOOTM_LEN" 后复位，
+          #   红灯循环重启，内核一次都没加载。
+          PART_LIMIT=$((BOOT_PART_LIMIT_MB * 1024 * 1024))
+          BOOTM_LIMIT=$((BOOT_IMAGE_MAX_MB * 1024 * 1024))
+          FSIZE=$(stat -c%s arch/arm64/boot/boot.img)
+          DSIZE=$(( FSIZE - 64 ))   # 去掉 64 字节 legacy 头，这个才是 bootm 看的数
+
+          echo "uImage 数据大小 ih_size ：$DSIZE 字节 = $((DSIZE/1024/1024)) MiB"
+          echo "boot.img 文件大小        ：$FSIZE 字节 = $((FSIZE/1024/1024)) MiB"
+          echo "对照：作者原厂 boot.img 14,028,808 字节；U-Boot 读取 15,728,640 字节（15MiB）"
+
+          if [ "$FSIZE" -gt "$PART_LIMIT" ]; then
+            echo "::error::boot.img 超过 boot 分区容量（${BOOT_PART_LIMIT_MB}M），写不进去"
             exit 1
           fi
+
+          # 把「未生效的瘦身项」也打出来，便于下一轮继续压
+          echo "=== 瘦身层效果核对（关键项应为 n / m）==="
+          for s in DRM MEDIA_SUPPORT SND_SOC ATA MD BLK_DEV_DM IPV6 NETFILTER BT WLAN \
+                   VIRTUALIZATION KVM XEN FTRACE KPROBES BPF_SYSCALL; do
+            V="$(grep -E "^CONFIG_${s}=|^# CONFIG_${s} is not set" .config 2>/dev/null | head -1 || true)"
+            printf '    %-18s %s\n' "$s" "${V:-（不在 .config 中）}"
+          done
+
+          if [ "$DSIZE" -gt "$BOOTM_LIMIT" ]; then
+            echo "::error::镜像 $DSIZE 字节 > U-Boot 上限 $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB），超出 $(( (DSIZE - BOOTM_LIMIT) / 1024 )) KiB"
+            echo "::error::刷上去会停在 'Image too large: increase CONFIG_SYS_BOOTM_LEN' 并红灯循环重启，故这里直接中止，不发布不可刷的镜像。"
+            echo "::error::下一轮请继续在 gk6323v100c.config 的「瘦身层」里关掉更多无关子系统（以本步骤回显的 =y 项为准）。"
+            exit 1
+          fi
+          echo "镜像大小校验通过：$DSIZE ≤ $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB）"
 
       - name: 整理产物
         run: |

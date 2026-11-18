@@ -179,6 +179,37 @@
 - 原因：dtbo 分区没写新 dtb，或写的是海思那支。
 - 处理：`sudo dd if=gk6323v100c-chaoge-z71a.dtb of=/dev/mmcblk0p10 bs=1K conv=fsync && sync && reboot`。
 
+### 6. 内核根本没加载：U-Boot 报 `Image too large: increase CONFIG_SYS_BOOTM_LEN`
+
+- 现象：TTL 日志里反复出现同一段，**看不到任何内核输出**：
+  ```
+  ## Booting kernel from Legacy Image at 04000000 ...
+     Loading Kernel Image ... Image too large: increase CONFIG_SYS_BOOTM_LEN
+  Must RESET board to recover
+  resetting ...
+  ```
+  然后红灯、十几秒一轮循环。
+- 判读要点：**这不是"日志抓漏了"**。`Image too large` 出现在 U-Boot 阶段，
+  内核压根没被跳转，所以自然没有任何 `Booting Linux`、earlycon 输出。
+- 原因：U-Boot 在启动内核前检查 uImage 的数据大小，超过它编译时的
+  `CONFIG_SYS_BOOTM_LEN` 就拒绝加载。参照值：
+  - 作者原厂 `boot.img` = **14,028,808 字节**，能正常启动 → 上限 > 14MB；
+  - U-Boot 从 boot 分区按 **30720 块** 读取 = **15,728,640 字节（15MiB）**
+    → 上限就在 15MiB 上下。
+  - `arm64` 的 `Image` 是**未压缩**的，通用 `defconfig` 编出来远超这个数。
+- 与「boot 分区 60M」是两个不同的限制，别混：前者是写不写得进，
+  后者是 U-Boot 收不收。
+- 处理（按代价从低到高）：
+  1. 在 `gk6323v100c.config` 的**「瘦身层」**继续关掉无关子系统，重建；
+     流水线会在打包步骤打印 `ih_size` 与超出量，据此迭代。
+  2. 若裁剪仍不够，把镜像编成 **gzip 压缩的 uImage**（`mkimage -C gzip`）——
+     但只有当 U-Boot 的解压缓冲（同为 `CONFIG_SYS_BOOTM_LEN`）不小于
+     解压后的 `Image` 时才成立，不一定能救。
+  3. 都不行，只能重编 U-Boot 放大 `CONFIG_SYS_BOOTM_LEN`（需要 U-Boot 源码，风险最高）。
+- 流水线已加硬校验：`ih_size` 超过 `BOOT_IMAGE_MAX_MB`（默认 15MiB）就中止，
+  **不发布刷进去会变砖的镜像**。
+- 救砖照走「三、关于救砖」。
+
 ---
 
 ## 三、关于救砖

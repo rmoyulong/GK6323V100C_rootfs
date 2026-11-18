@@ -167,6 +167,14 @@ sudo dd if=/root/boot.bak of=/dev/mmcblk0p15 bs=1M conv=fsync && sync && reboot
 
 ## 八、这一版的已知限制
 
+- **镜像大小有硬上限（最容易踩）**：U-Boot 启动前检查 uImage 数据大小，
+  超过它编译时的 `CONFIG_SYS_BOOTM_LEN` 就打印
+  `Image too large: increase CONFIG_SYS_BOOTM_LEN` 并复位 —— 表现是**红灯
+  循环重启、TTL 里全是 U-Boot、看不到任何内核输出**。参照：作者原厂
+  `boot.img` 为 14,028,808 字节，U-Boot 按 30720 块（15,728,640 字节）读内核。
+  因此 `gk6323v100c.config` 里加了一层**「瘦身层」**专管关掉无关子系统；
+  流水线在打包时打印 `ih_size` 与超出量，超过 `BOOT_IMAGE_MAX_MB`（默认 15MiB）
+  直接中止，不发布不可刷的镜像。
 - **eMMC 依赖 bootloader 已配好的时钟**：国科私有 CRU 没有主线驱动，本版
   把外设时钟改指 fixed-clock 并保持 `clk_ignore_unused`，能否起来取决于
   引导器是否已把 SD/eMMC 时钟打开。这是第一版的最大不确定点。
