@@ -390,7 +390,7 @@ jobs:
                    GENERIC_PHY USB_PHY \
                    USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
                    I2C_HIX5HD2 GPIO_PL061 SPI_PL022 RTC_DRV_PCF8563 ARM_SP805_WATCHDOG \
-                   DEBUG_FS MII \
+                   DEBUG_FS \
                    SND SND_USB \
                    NLS NLS_UTF8 NLS_CODEPAGE_936; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
@@ -423,7 +423,11 @@ jobs:
           done
 
           echo "=== 派生符号报告（无 prompt / 由 select 决定，写进叠加层也无效，仅报告不判失败）==="
-          for s in ARM_GIC_V3 ARM_GIC_V3_ITS SND_PCM SND_TIMER SND_HWDEP SND_RAWMIDI SND_SOC MDIO_DEVICE; do
+          # MII 与 MDIO_DEVICE 同类：drivers/net/Kconfig 里是 `config MII` + 单独一行
+          # `tristate`，没有提示字符串 —— 属无 prompt 符号，取值由 PHYLIB 等 select
+          # 决定。2026-11-19 那版把它列在「期望项」里，于是每轮构建都刷两条一模一样的
+          # 误报，已移到本节。MII 是 phylib 走 mii_* 接口的那一层，不写也照样会被拉起来。
+          for s in ARM_GIC_V3 ARM_GIC_V3_ITS SND_PCM SND_TIMER SND_HWDEP SND_RAWMIDI SND_SOC MDIO_DEVICE MII; do
             V="$(lookup "^(CONFIG_${s}=|# CONFIG_${s} is not set)")"
             printf '    %-22s %s\n' "$s" "${V:-（不在 .config 中）}"
           done
@@ -602,29 +606,42 @@ jobs:
           # 仍是 =y 说明没关掉；=m 多半是被 select 拉起，详见 README 的自检对照表。
           echo "=== 裁剪层效果核对（关键项应为 n / m）==="
           for s in DRM MEDIA_SUPPORT SND_SOC ATA MD BLK_DEV_DM IPV6 NETFILTER BT WLAN \
-                   VIRTUALIZATION KVM XEN FTRACE KPROBES BPF_SYSCALL; do
+                   VIRTUALIZATION KVM XEN FTRACE KPROBES BPF_SYSCALL \
+                   KALLSYMS RC_CORE HID CPU_FREQ CPU_IDLE ARM_CMN CRYPTO_ZSTD SCSI_UFSHCD; do
             V="$(grep -E "^CONFIG_${s}=|^# CONFIG_${s} is not set" .config 2>/dev/null | head -1 || true)"
             printf '    %-18s %s\n' "$s" "${V:-（不在 .config 中）}"
           done
 
-          # 体积构成：把最大的内置目标文件列出来，作为下一轮继续压的依据。
-          # 为什么盯 .o 而不是看 .config 行数：Image 里只装 =y 的代码，
-          # 被编成 =m 的驱动对 Image 体积零贡献（只让模块包变大）。
+          # 体积构成。★ 2026-11-19 修正：上一版直接用 `find . -name '*.o'` 统计，
+          #   把**模块**的 .o 也算了进去 —— 而 Image 里只有 =y 的代码，模块对象对
+          #   Image 体积零贡献。那份清单因此严重失真（排最前的 snd-usb-audio.o
+          #   548KB、snd-pcm.o、ntfs3.o 全是模块），照它裁剪必然打空。
+          #   现在只统计真正进 Image 的东西：vmlinux 各段 + built-in.a 的成员。
           echo "=== 体积构成（供下一轮继续压）==="
           [ -f vmlinux ] && ls -l vmlinux && size vmlinux 2>/dev/null || true
-          echo "--- 内置代码里最大的 30 个目标文件 ---"
-          find . -name '*.o' -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -30 || true
-          echo "--- 顶层目录占用（.o 合计）---"
-          find . -name '*.o' -type f -printf '%s\t%h\n' 2>/dev/null \
-            | awk -F'\t' '{a[$2]+=$1} END{for (k in a) printf "%10d\t%s\n", a[k], k}' \
-            | sort -rn | head -15 || true
+          echo "--- vmlinux 各段（决定 Image 大小的就是这些，按字节降序）---"
+          size -A vmlinux 2>/dev/null | sort -k2 -rn 2>/dev/null | head -20 || true
+          echo "--- 最大的 25 个内置目标文件（built-in.a 成员，模块已排除）---"
+          : > /tmp/builtin.tsv
+          for a in $(find . -name built-in.a -type f 2>/dev/null); do
+            d="${a%/built-in.a}"; d="${d#./}"
+            ar tv "$a" 2>/dev/null | awk -v d="$d" 'NF>=3 && $NF ~ /\.o$/ {printf "%d\t%s/%s\n", $3, d, $NF}' >> /tmp/builtin.tsv || true
+          done
+          echo "内置目标文件条目数：$(wc -l < /tmp/builtin.tsv)"
+          sort -rn /tmp/builtin.tsv 2>/dev/null | head -25 || true
+          echo "--- 内置体积按顶层目录汇总 ---"
+          awk -F'\t' '{split($2,p,"/"); a[p[1]]+=$1} END{for (k in a) printf "%10d\t%s\n", a[k], k}' \
+            /tmp/builtin.tsv | sort -rn 2>/dev/null | head -15 || true
+          echo "--- 模块（不进 Image，仅供核对）---"
+          find . -name '*.ko' -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn 2>/dev/null | head -10 || true
 
           if [ "$DSIZE" -gt "$BOOTM_LIMIT" ]; then
             echo "::error::镜像 $DSIZE 字节 > 目标上限 $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB），超出 $(( (DSIZE - BOOTM_LIMIT) / 1024 )) KiB"
             echo "::error::已确认能启动的原厂 ih_size 是 14,028,744 字节；刷上去会停在 'Image too large: increase CONFIG_SYS_BOOTM_LEN' 并红灯循环重启。"
-            echo "::error::故这里中止，不发布不可刷的镜像。继续压的入口：按上面「体积构成」里最大的 .o / 目录，"
-            echo "::error::在 slim.config（裁剪层，只写 # CONFIG_XXX is not set）里关掉它；若要保留功能就编成模块，"
+            echo "::error::故这里中止，不发布不可刷的镜像。继续压的入口：看上面「最大的 25 个内置目标文件」与「vmlinux 各段」，"
+            echo "::error::在 slim.config（裁剪层，只写 # CONFIG_XXX is not set）里关掉对应子系统；若要保留功能就编成模块，"
             echo "::error::把对应的 =m 写进 $FRAGMENT（功能层，只写启用项）。两层不要抢同一个符号，否则谁生效只看文件顺序。"
+            echo "::error::★ 注意：Image 里只装 =y 的代码，=m 的驱动对体积零贡献 —— 别拿模块对象当裁剪依据。"
             exit 1
           fi
           echo "镜像大小校验通过：$DSIZE ≤ $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB）"
@@ -652,24 +669,18 @@ jobs:
           echo "内核 release: $KREL"
           echo "=== 产物列表 ==="
           ls -lh
-
-      - name: 写输出说明书
+          
+      - name: 生成发布说明
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PATCHES_KERNEL_VERSION: ${{ env.PATCHES_KERNEL_VERSION }}
           TARGET_DTB: ${{ env.TARGET_DTB }}
           UIMAGE_LOADADDR: ${{ env.UIMAGE_LOADADDR }}
           BOOT_PART: ${{ env.BOOT_PART }}
           DTBO_PART: ${{ env.DTBO_PART }}
-          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          cd linux_build/out
-          TAG="gk6323v100c-${PATCHES_KERNEL_VERSION}-b${GITHUB_RUN_NUMBER}"
           KREL="$PATCHES_KERNEL_VERSION"
-          NOTES=RELEASE_NOTES.md
-
-          cat > "$NOTES" <<EOF
+          cat > linux_build/RELEASE_NOTES.md <<-EOF
           # GK6323V100C 内核 ${KREL}
 
           面向国科微 GK6323V100C 机顶盒（真机 4×Cortex-A55 + GICv3，ARM64）的自编译内核。
@@ -726,33 +737,17 @@ jobs:
 
           校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。
           EOF
-          sed -i 's/^ *//' "$NOTES"
-          head -20 "$NOTES"
-
-          CONFIG_ASSET="$(ls -1 config-* 2>/dev/null | head -1 || true)"
-          if [ -z "$CONFIG_ASSET" ]; then
-            echo "::error::out/ 里找不到 config-* 产物，无法随 Release 发布"
-            exit 1
-          fi
-          echo "附带发布本次内核配置：$CONFIG_ASSET"
+          head -20 linux_build/RELEASE_NOTES.md
 
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          #tag_name: gk6323v100c-${{ env.PATCHES_KERNEL_VERSION }}-b${{ github.run_number }}
           tag_name: GK6323V100C_latest
-          body_path: linux_build/out/RELEASE_NOTES.md
+          body_path: linux_build/RELEASE_NOTES.md
           allowUpdates: true
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           files: |
-            linux_build/out/boot.img
-            linux_build/out/${{ env.TARGET_DTB }}
-            linux_build/out/modules.tar.gz
-            linux_build/out/Image
-            linux_build/out/sha256sums.txt
-            linux_build/out/config-*
-
-
+            linux_build/out/*

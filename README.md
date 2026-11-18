@@ -226,7 +226,13 @@ sudo dd if=/root/boot.bak of=/dev/mmcblk0p15 bs=1M conv=fsync && sync && reboot
 - **内核版本号是 7.4.x**，不是作者那版 `6.18.46-gk6323-debian`，模块装在
   `/lib/modules/7.4.x`，内核与模块必须一起替换。
 - CPU 变频（`goke,gk6323-cpufreq`）、红外、温度传感器同样缺少主线驱动，
-  本版未启用。
+  本版未启用（`CPU_FREQ` / `RC_CORE` 已在裁剪层显式关掉，顺便省下体积）。
+- **体积把关只认"内置"**：`Image` 里只装 `=y` 的代码，`=m` 的驱动对体积零贡献。
+  流水线「体积构成」只统计 `built-in.a` 成员与 `vmlinux` 各段，模块对象单列；
+  别再照 `find . -name '*.o'` 那类清单裁剪（它把模块也算进来了，必然打空）。
+  单板用不到的两笔大头：`RC_CORE` 红外键映射表约 940KB（**不受
+  `MEDIA_SUPPORT` 约束**，必须单独关）与 `KALLSYMS` 符号表约 1.8MB
+  （需功能层先开 `EXPERT` 才关得动，代价是 oops 不再打印函数名）。
 - **网口 PHY 驱动缺一**：`HISI_FEMAC`（MAC）与 `MDIO_HISI_FEMAC`（MDIO 总线）
   都在，但补丁库 rc3 版已移除 Festa PHY 驱动，`HISI_FESTA_PHY` 符号在内核树里
   不存在。若这台机的 EPHY 正是 Festa 系列，网口可能拿不到 link —— 网口是第二

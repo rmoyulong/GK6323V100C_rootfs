@@ -183,8 +183,27 @@ New value: CONFIG_NTFS3_FS=y
   `SQUASHFS`、`FB`、`BPF_SYSCALL`、`MEMCG`/`BLK_CGROUP`、`KEXEC`、
   `TEE`/`OPTEE`、`STAGING`、`HIBERNATION`、`KALLSYMS_ALL` —— v11 的
   `slim.config` 已把这一批关掉。
-- 仍不够时的下一批候选：`KALLSYMS` 本体（会失去 oops 函数名解析，带板阶段不划算）、
-  用不到的 `CRYPTO` 算法、`SOUND` 里的非 USB 部分。
+- 仍不够时看流水线报告：**只统计进 Image 的部分**（`built-in.a` 成员 + `vmlinux`
+  各段），模块对象已排除在外。⚠️ 别再照 `find . -name '*.o'` 的旧清单裁剪 ——
+  它把模块的 `.o` 也算进来了（排最前的 `snd-usb-audio.o` 548KB、`snd-pcm.o`、
+  `ntfs3.o` 全是模块），而 Image 里只装 `=y` 的代码，照着它下刀必然打空，
+  2026-11-19 那轮就是这么白干一遍的。
+
+### 17. 两处最容易看漏的体积大头（2026-11-19 定位）
+
+- **`CONFIG_RC_CORE`（红外遥控）**：`drivers/media/Kconfig` 第一行注释写明
+  *CEC and Remote Controller support should not depend on MEDIA_SUPPORT*，
+  `source "drivers/media/rc/Kconfig"` 在 `if MEDIA_SUPPORT` **之前**。
+  所以关掉 `MEDIA_SUPPORT` **不会**关掉它，`drivers/media/rc/keymaps/` 那 940KB
+  照样在编。要关它必须显式写 `# CONFIG_RC_CORE is not set`（已加进 slim.config 第 14 节）。
+- **`CONFIG_KALLSYMS`（内核符号表）**：约 1.8MB，是单笔最大的内置开销。
+  但它在 `init/Kconfig` 里的定义是
+  `bool "Load all symbols for debugging/ksymoops" if EXPERT` ——
+  **必须先开 `CONFIG_EXPERT=y`**（已加进功能层），否则它没有提示字符串，
+  裁剪层那句会被 `olddefconfig` 丢弃、自检报「未生效」。
+  注意区分：`arch/Kconfig` 里那句 `select KALLSYMS` 属于 `config KPROBES`，
+  而 KPROBES 已被裁掉，所以 KALLSYMS 并没有被无条件锁死。代价是 oops 里
+  不再打印函数名，需要用 `System.map` 手工解析地址。
 
 ---
 
