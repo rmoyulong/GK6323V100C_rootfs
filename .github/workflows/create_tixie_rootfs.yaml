@@ -9,7 +9,7 @@ on:
         default: 'trixie'
   push:
     paths:
-      - '.github/workflows/create_tixie_rootfs.yml'
+      - '.github/workflows/create_tixie_rootfs.yaml'
 
 permissions:
   contents: write
@@ -300,7 +300,7 @@ jobs:
           
           # ---------- 7) 添加samba配置 ----------
           sudo mkdir -p "$ROOTFS_DIR/etc/samba"
-          sudo cp ${{ github.workspace }}/patch/smb.conf /mnt/rootfs/etc/samba/smb.conf
+          sudo cp ${{ github.workspace }}/patch/smb.conf $ROOTFS_DIR/etc/samba/smb.conf
           
           # ---------- 8) 创建挂载点（NAS MUSIC mount 使用） ----------
           sudo mkdir -p $ROOTFS_DIR/mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
