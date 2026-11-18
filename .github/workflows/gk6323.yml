@@ -434,7 +434,9 @@ jobs:
         with:
           tag_name: GK6323V100C_latest
           body_path: linux_build/RELEASE_NOTES.md
-          generate_release_notes: true
+          allowUpdates: true
+          replacesArtifacts: true
+          artifactErrorsFailBuild: true
           files: |
             linux_build/out/boot.img
             linux_build/out/Image
