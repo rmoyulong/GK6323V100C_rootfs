@@ -38,6 +38,7 @@ on:
     paths:
       - '.github/workflows/gk6323.yml'
       - 'gk6323v100c.config'
+      - 'slim.config'
       - 'apply_histb_patches.sh'
       - 'dts/*.dts'
       - 'dts/check-dts.py'
@@ -71,13 +72,20 @@ jobs:
       BOOT_PART: /dev/mmcblk0p15
       BOOT_PART_LIMIT_MB: "60"
       DTBO_PART: /dev/mmcblk0p10
-      # ★ 与上面那个 60M 不是一回事：U-Boot 启动内核前会检查 uImage 数据大小，
-      #   超过它编译时的 CONFIG_SYS_BOOTM_LEN 就打印
+      # ★ 与上面那个 60M 不是一回事：U-Boot 启动内核前会检查 uImage 的数据大小
+      #   （ih_size），超过它编译时的 CONFIG_SYS_BOOTM_LEN 就打印
       #     "Image too large: increase CONFIG_SYS_BOOTM_LEN"
-      #   并复位（表现为红灯循环重启）。作者原厂 boot.img 14,028,808 字节可正常
-      #   启动，U-Boot 从 boot 分区读 30720 块 = 15,728,640 字节（15MiB），
-      #   故上限取 15MiB。超过这里就地中止，不产出刷进去会变砖的镜像。
-      BOOT_IMAGE_MAX_MB: "15"
+      #   并复位（表现为红灯循环重启）。已确认的两个边界：
+      #     · 下界 —— 作者原厂 boot.img 14,028,808 字节（ih_size 14,028,744）
+      #       能正常启动 → 上限 ≥ 13.38MiB；
+      #     · 上界 —— 本仓库上一版约 15MB 的镜像被同一台机器拒绝 → 上限 < 15MB。
+      #   故真实上限落在 (13.38MiB, 15MB) 之间，最可能是 14MiB（0xE00000）。
+      #   U-Boot 的 bootcmd 一次只读 30720 块 = 15MiB，读窗口也在这条线上。
+      #   这里取 13MiB 作为目标：低于已确认能启动的 13.38MiB，留出余量；
+      #   超过就中止，不产出刷进去会变砖的镜像。
+      #   注意：不要指望 gzip 绕过去 —— bootm 的 gzip 分支把 CONFIG_SYS_BOOTM_LEN
+      #   当作**解压输出缓冲上限**，解压后的 Image 仍必须 ≤ 该上限。
+      BOOT_IMAGE_MAX_MB: "13"
 
     steps:
       - name: 检出仓库代码
@@ -187,9 +195,14 @@ jobs:
           set -euo pipefail
           cd linux_build
 
-          # arm64 通用默认配置 → 叠加单板配置层 → 让 kconfig 补依赖
+          # arm64 通用默认配置 → 叠加单板功能配置 → 叠加体积裁剪配置 → 让 kconfig 补依赖
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" defconfig
           ./scripts/kconfig/merge_config.sh -m .config "../$FRAGMENT"
+          # 二次裁剪：单独放 slim.config 里维护，所有要手动关掉的非必要选项都写在这里
+          # 来源：编译后 .config 里所有 =y 的非必须项，逐条验证后关闭，目标 Image <= 13MiB
+          echo "=== 应用体积裁剪配置 slim.config ==="
+          ./scripts/kconfig/merge_config.sh -m .config "../slim.config"
+          yes "" | make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
           # 说明：$FRAGMENT 本身已包含下列全部项目，这里的 scripts/config
           # 只是防止叠加过程中丢项，符号名以内核 Kconfig 为准
@@ -459,6 +472,13 @@ jobs:
             exit 1
           fi
 
+          # 设备树体积提醒：引导器 bootcmd 里从 dtbo 分区只读 32 块 = 16KiB 到
+          # 0x03FFC000（紧跟内核加载地址 0x04000000 之前），超了会被截断。
+          # 参照：作者那版 dtbo 里的 dtb 只有 9156 字节。
+          if [ "$DTBSIZE" -gt 16384 ]; then
+            echo "::warning::设备树 $DTBSIZE 字节 > 16KiB —— 若引导器按 32 块读取 dtbo 分区，会被截断；考虑精简 dts 节点"
+          fi
+
           mkimage -A arm64 -O linux -T kernel -C none \
             -a "$UIMAGE_LOADADDR" -e "$UIMAGE_ENTRYADDR" \
             -n "GK6323V100C Linux $PATCHES_KERNEL_VERSION" \
@@ -494,10 +514,22 @@ jobs:
             printf '    %-18s %s\n' "$s" "${V:-（不在 .config 中）}"
           done
 
+          # 体积构成：把最大的内置目标文件列出来，作为下一轮继续压的依据。
+          # 为什么盯 .o 而不是看 .config 行数：Image 里只装 =y 的代码，
+          # 被编成 =m 的驱动对 Image 体积零贡献（只让模块包变大）。
+          echo "=== 体积构成（供下一轮继续压）==="
+          [ -f vmlinux ] && ls -l vmlinux && size vmlinux 2>/dev/null || true
+          echo "--- 内置代码里最大的 30 个目标文件 ---"
+          find . -name '*.o' -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -30 || true
+          echo "--- 顶层目录占用（.o 合计）---"
+          find . -name '*.o' -type f -printf '%s\t%h\n' 2>/dev/null \
+            | awk -F'\t' '{a[$2]+=$1} END{for (k in a) printf "%10d\t%s\n", a[k], k}' \
+            | sort -rn | head -15 || true
+
           if [ "$DSIZE" -gt "$BOOTM_LIMIT" ]; then
-            echo "::error::镜像 $DSIZE 字节 > U-Boot 上限 $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB），超出 $(( (DSIZE - BOOTM_LIMIT) / 1024 )) KiB"
-            echo "::error::刷上去会停在 'Image too large: increase CONFIG_SYS_BOOTM_LEN' 并红灯循环重启，故这里直接中止，不发布不可刷的镜像。"
-            echo "::error::下一轮请继续在 gk6323v100c.config 的「瘦身层」里关掉更多无关子系统（以本步骤回显的 =y 项为准）。"
+            echo "::error::镜像 $DSIZE 字节 > 目标上限 $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB），超出 $(( (DSIZE - BOOTM_LIMIT) / 1024 )) KiB"
+            echo "::error::已确认能启动的原厂 ih_size 是 14,028,744 字节；刷上去会停在 'Image too large: increase CONFIG_SYS_BOOTM_LEN' 并红灯循环重启。"
+            echo "::error::故这里中止，不发布不可刷的镜像。继续压的入口：按上面「体积构成」里最大的 .o / 目录，在 $FRAGMENT 的「瘦身层」里关掉或降为 =m。"
             exit 1
           fi
           echo "镜像大小校验通过：$DSIZE ≤ $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB）"
@@ -527,62 +559,79 @@ jobs:
           ls -lh
 
       - name: 生成发布说明
+        env:
+          PATCHES_KERNEL_VERSION: ${{ env.PATCHES_KERNEL_VERSION }}
+          TARGET_DTB: ${{ env.TARGET_DTB }}
+          UIMAGE_LOADADDR: ${{ env.UIMAGE_LOADADDR }}
+          BOOT_PART: ${{ env.BOOT_PART }}
+          DTBO_PART: ${{ env.DTBO_PART }}
         run: |
-            cat > linux_build/RELEASE_NOTES.md <<EOF
-            # GK6323V100C 内核 ${KREL}
+          set -euo pipefail
+          KREL="$PATCHES_KERNEL_VERSION"
+          mkdir -p linux_build
+          cat > linux_build/RELEASE_NOTES.md <<-EOF
+          # GK6323V100C 内核 ${KREL}
 
-            面向国科微 GK6323V100C 机顶盒（真机 4×Cortex-A55 + GICv3，ARM64）的自编译内核。
+          面向国科微 GK6323V100C 机顶盒（真机 4×Cortex-A55 + GICv3，ARM64）的自编译内核。
 
-            ## 说明文本
+          ## 说明文本
 
-            - 内核基线：Linux ${KREL}（与 hi3798mv100 仓库同一 pin），按补丁库 baseline 提取工作树
-            - 补丁来源：histb-mainline_patches，严格应用（等价 --fuzz=0），冲突即回滚
-            - 设备树：${TARGET_DTB}，逐项取自真机导出的设备树（A55 / GICv3 / 国科专有 IP 全部对齐）
-            - 内核配置：仓库 gk6323v100c.config；串口、eMMC、ext4、命令行分区表均编入内核（=y）
-            - 关键项：CONFIG_SND_USB_AUDIO —— 作者那版 BSP 内核没有编入，USB 声卡因此不出声
-            - 该驱动形态与 mv100 的 kernel.config 一致（=m），所以必须先把模块解开再重启
-            - 模块支持：CONFIG_MODULES=y，作者那版是纯内置内核（/proc/modules 不存在）
-            - 镜像格式：uImage，-A arm64，不压缩（-C none），加载/入口地址 ${UIMAGE_LOADADDR}
-            - 设备树同时追加在内核镜像末尾（追加处校验魔数 d00dfeed）并单独发布
-            - 本内核版本号是 ${KREL}，与作者那版 6.18.46-gk6323-debian 不同，
-              模块会装到 /lib/modules/${KREL} 下，内核与模块必须一起替换
+          - 内核基线：Linux ${KREL}（与 hi3798mv100 仓库同一 pin），按补丁库 baseline 提取工作树
+          - 补丁来源：histb-mainline_patches，严格应用（等价 --fuzz=0），冲突即回滚
+          - 设备树：${TARGET_DTB}，逐项取自真机导出的设备树（A55 / GICv3 / 国科专有 IP 全部对齐）
+          - 内核配置：仓库 gk6323v100c.config；串口、eMMC、ext4、命令行分区表均编入内核（=y）
+          - 关键项：CONFIG_SND_USB_AUDIO —— 作者那版 BSP 内核没有编入，USB 声卡因此不出声
+          - 该驱动形态与 mv100 的 kernel.config 一致（=m），所以必须先把模块解开再重启
+          - 模块支持：CONFIG_MODULES=y，作者那版是纯内置内核（/proc/modules 不存在）
+          - 镜像格式：uImage，-A arm64，不压缩（-C none），加载/入口地址 ${UIMAGE_LOADADDR}
+          - 设备树同时追加在内核镜像末尾（追加处校验魔数 d00dfeed）并单独发布
+          - 大小约束：uImage 的 ih_size 已压到 13MiB 以内。原因：bootm 跳转内核前
+            会拿 ih_size 与 U-Boot 编译时的 CONFIG_SYS_BOOTM_LEN 比较，超了就报
+            'Image too large: increase CONFIG_SYS_BOOTM_LEN' 并复位（红灯循环重启）。
+            作者原厂 boot.img 14,028,808 字节（ih_size 14,028,744）能启动、上一版
+            约 15MB 的被拒，故上限落在 (13.38MiB, 15MB)，最可能是 14MiB。
+          - 提醒：arm32 的 hi3798mv100 靠 XZ 自解压 zImage 做到 8~9M，这套在本机
+            用不上（arm64 的 Image 无解压头、也不压缩），只能真把 Image 编小。
+          - 本内核版本号是 ${KREL}，与作者那版 6.18.46-gk6323-debian 不同，
+            模块会装到 /lib/modules/${KREL} 下，内核与模块必须一起替换
 
-            ## 产物
+          ## 产物
 
-            | 文件 | 用途 |
-            | --- | --- |
-            | boot.img | 内核镜像（uImage，内嵌设备树），写入 ${BOOT_PART} |
-            | ${TARGET_DTB} | 设备树，**必须**写入 ${DTBO_PART}（真机运行时用的是这个分区的 dtb） |
-            | modules.tar.gz | 内核模块，解压到根目录 / |
-            | Image | 未打包的裸内核，仅供核对 |
-            | config-${KREL} | 本次实际使用的内核配置 |
-            | sha256sums.txt | 上述产物的校验值 |
+          | 文件 | 用途 |
+          | --- | --- |
+          | boot.img | 内核镜像（uImage，内嵌设备树），写入 ${BOOT_PART} |
+          | ${TARGET_DTB} | 设备树，**必须**写入 ${DTBO_PART}（真机运行时用的是这个分区的 dtb） |
+          | modules.tar.gz | 内核模块，解压到根目录 / |
+          | Image | 未打包的裸内核，仅供核对 |
+          | config-${KREL} | 本次实际使用的内核配置 |
+          | sha256sums.txt | 上述产物的校验值 |
 
-            ## 刷写步骤（顺序不可颠倒）
+          ## 刷写步骤（顺序不可颠倒）
 
-            1. 把 boot.img、${TARGET_DTB}、modules.tar.gz 传到机器 /tmp 目录
-            2. 先备份：dd if=${BOOT_PART} of=/root/boot.bak bs=1M conv=fsync
-            3. 先装模块：cd / && tar -xzf /tmp/modules.tar.gz && sync
-            4. 刷内核：dd if=/tmp/boot.img of=${BOOT_PART} bs=1M conv=fsync && sync
-            5. 刷设备树：dd if=/tmp/${TARGET_DTB} of=${DTBO_PART} bs=1K conv=fsync && sync
-            6. 等待数秒后 reboot
+          1. 把 boot.img、${TARGET_DTB}、modules.tar.gz 传到机器 /tmp 目录
+          2. 先备份：dd if=${BOOT_PART} of=/root/boot.bak bs=1M conv=fsync
+          3. 先装模块：cd / && tar -xzf /tmp/modules.tar.gz && sync
+          4. 刷内核：dd if=/tmp/boot.img of=${BOOT_PART} bs=1M conv=fsync && sync
+          5. 刷设备树：dd if=/tmp/${TARGET_DTB} of=${DTBO_PART} bs=1K conv=fsync && sync
+          6. 等待数秒后 reboot
 
-            ## 回滚
+          ## 回滚
 
-            若启动异常（指示灯异常闪烁、TTL 无输出），用备份镜像写回：
+          若启动异常（指示灯异常闪烁、TTL 无输出），用备份镜像写回：
 
-            dd if=/root/boot.bak of=${BOOT_PART} bs=1M conv=fsync && sync && reboot
+          dd if=/root/boot.bak of=${BOOT_PART} bs=1M conv=fsync && sync && reboot
 
-            注意：本次同时改写了 dtbo 分区。回滚内核不会恢复原来的设备树，
-            若手上有原机 dtbo.img，请一并写回 ${DTBO_PART}。
+          注意：本次同时改写了 dtbo 分区。回滚内核不会恢复原来的设备树，
+          若手上有原机 dtbo.img，请一并写回 ${DTBO_PART}。
 
-            校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。
-            EOF
-          
+          校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。
+          EOF
+          head -20 linux_build/RELEASE_NOTES.md
+
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}        
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: GK6323V100C_latest
           body_path: linux_build/RELEASE_NOTES.md

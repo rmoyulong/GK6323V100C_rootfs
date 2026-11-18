@@ -178,6 +178,12 @@
 - 现象：`verify-device.sh` 报"设备树 model 不是本机型"。
 - 原因：dtbo 分区没写新 dtb，或写的是海思那支。
 - 处理：`sudo dd if=gk6323v100c-chaoge-z71a.dtb of=/dev/mmcblk0p10 bs=1K conv=fsync && sync && reboot`。
+- **另注意设备树体积**：`bootcmd` 里从 dtbo 分区读的是 `0x20` = 32 块
+  = **16KiB** 到 `0x03FFC000`（正好顶到内核加载地址 `0x04000000` 之前）。
+  作者那版 dtbo 里的 dtb 只有 **9156 字节**。本仓库当前的 dtb 约 28KiB，
+  若引导器确实按 32 块读取，会**被截断**、内核拿不到完整设备树。
+  流水线在打包时会打印 dtb 字节数，超过 16KiB 会告警；
+  真遇到这种情况，下一步是精简 `dts/gk6323v100c-chaoge-z71a.dts` 的节点。
 
 ### 6. 内核根本没加载：U-Boot 报 `Image too large: increase CONFIG_SYS_BOOTM_LEN`
 
@@ -191,23 +197,33 @@
   然后红灯、十几秒一轮循环。
 - 判读要点：**这不是"日志抓漏了"**。`Image too large` 出现在 U-Boot 阶段，
   内核压根没被跳转，所以自然没有任何 `Booting Linux`、earlycon 输出。
-- 原因：U-Boot 在启动内核前检查 uImage 的数据大小，超过它编译时的
-  `CONFIG_SYS_BOOTM_LEN` 就拒绝加载。参照值：
-  - 作者原厂 `boot.img` = **14,028,808 字节**，能正常启动 → 上限 > 14MB；
-  - U-Boot 从 boot 分区按 **30720 块** 读取 = **15,728,640 字节（15MiB）**
-    → 上限就在 15MiB 上下。
-  - `arm64` 的 `Image` 是**未压缩**的，通用 `defconfig` 编出来远超这个数。
+- 原因：`bootm` 跳转内核前，拿 uImage 的数据大小（`ih_size`）与它编译时的
+  `CONFIG_SYS_BOOTM_LEN` 比较，超了就拒绝。实测到两个边界：
+  - 作者原厂 `boot.img` = **14,028,808 字节**（`ih_size` 14,028,744）能启动
+    → 上限 ≥ 13.38MiB；
+  - 本仓库上一版约 15MB 的镜像被同一台机器拒绝 → 上限 < 15MB。
+  故真实上限落在 (13.38MiB, 15MB) 之间，最可能是 **14MiB（0xE00000）**。
+  另外 `bootcmd` 里 `mmc read ... 0x7800` 一次只读 30720 块 = 15MiB，
+  读窗口也在同一条线上。
 - 与「boot 分区 60M」是两个不同的限制，别混：前者是写不写得进，
   后者是 U-Boot 收不收。
-- 处理（按代价从低到高）：
-  1. 在 `gk6323v100c.config` 的**「瘦身层」**继续关掉无关子系统，重建；
-     流水线会在打包步骤打印 `ih_size` 与超出量，据此迭代。
-  2. 若裁剪仍不够，把镜像编成 **gzip 压缩的 uImage**（`mkimage -C gzip`）——
-     但只有当 U-Boot 的解压缓冲（同为 `CONFIG_SYS_BOOTM_LEN`）不小于
-     解压后的 `Image` 时才成立，不一定能救。
-  3. 都不行，只能重编 U-Boot 放大 `CONFIG_SYS_BOOTM_LEN`（需要 U-Boot 源码，风险最高）。
-- 流水线已加硬校验：`ih_size` 超过 `BOOT_IMAGE_MAX_MB`（默认 15MiB）就中止，
-  **不发布刷进去会变砖的镜像**。
+- **为什么 hi3798mv100 的"8M uImage"救不了这一局**：mv100 是 arm32，
+  uImage 里装的是 `make zImage` 的产物 —— 自带解压头、内核本体用 XZ 压缩
+  （那个仓库的 `kernel.config` 里 `CONFIG_KERNEL_XZ=y`），所以 U-Boot 只看到
+  压缩后的 8~9MB；本机是 arm64，`make Image` 产出的既无解压头也不压缩，
+  U-Boot 看到的是全量。体积差来自**镜像形态**，不是配置精瘦程度 ——
+  照搬 mv100 的配置也不会变小。
+- **`mkimage -C gzip` 同样绕不过去**：`bootm` 的 gzip 分支把
+  `CONFIG_SYS_BOOTM_LEN` 当作解压输出缓冲上限，解压后的 `Image` 仍须 ≤ 该值。
+- 处理：在 `gk6323v100c.config` 的**「瘦身层」**继续关掉无关子系统、重建。
+  流水线会在打包步骤打印 `ih_size`、`size vmlinux`、**最大的 30 个内置 `.o`**
+  与顶层目录占用，照那份清单接着砍即可。
+  关键认识：Image 里只装 `=y` 的代码，编成 `=m` 的驱动对 Image 体积**零贡献**
+  （模块放在 rootfs 上，没有大小限制），所以"能模块化的就模块化"最有效；
+  arm64 默认配置把二十多个 SoC 平台全部内置、平台驱动又不能模块化，
+  那才是大头。
+- 流水线已加硬校验：`ih_size` 超过 `BOOT_IMAGE_MAX_MB`（本版起为 **13MiB**）
+  就中止，**不发布刷进去会变砖的镜像**。
 - 救砖照走「三、关于救砖」。
 
 ---

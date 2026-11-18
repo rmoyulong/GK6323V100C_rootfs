@@ -37,9 +37,9 @@ USB `f9880000`/`f9890000`），但 **CPU 核与中断控制器是根本性不同
 | 项目 | hi3798mv100 | 本仓库 |
 | --- | --- | --- |
 | 架构与工具链 | `ARCH=arm` | `ARCH=arm64`，`aarch64-linux-gnu-` |
-| 内核镜像 | `zImage` → `-A arm` uImage | `Image` → `-A arm64` uImage |
+| 内核镜像 | `zImage`（XZ压缩）→ `-A arm` uImage | `Image`（无压缩）→ `-A arm64` uImage |
 | 设备树 | 类同做法，追加到镜像末尾 | 追加到 `Image` 末尾，另单独发一份 |
-| 单板配置 | `kernel.config`（整份） | `gk6323v100c.config`（叠加层） |
+| 单板配置 | `kernel.config`（整份） | 功能配置 `gk6323v100c.config` + 体积裁剪 `slim.config` 两层叠加 |
 | 刷写分区 | `boot` | `boot = /dev/mmcblk0p15`，另有 `dtbo = /dev/mmcblk0p10` |
 
 ---
@@ -67,14 +67,20 @@ USB `f9880000`/`f9890000`），但 **CPU 核与中断控制器是根本性不同
 
 1. Settings → Actions → General → Workflow permissions 选 **Read and write**。
 2. Actions 里选「GK6323V100C 内核自动构建」→ Run workflow。
-3. 也可以在改动 `gk6323v100c.config`、`apply_histb_patches.sh`、`dts/*.dts`
+3. 也可以在改动 `gk6323v100c.config`、`slim.config`、`apply_histb_patches.sh`、`dts/*.dts`
    或本workflow时自动触发。
+
+> **配置分层说明**：`gk6323v100c.config` 只放"要打开什么功能"的正向配置（=y/=m）；
+> `slim.config` 只放"要关闭什么无关项"的裁剪配置（# CONFIG_xxx is not set），
+> 专门负责把其他arm64平台、非必需驱动、调试功能关掉，把Image体积压到13MiB以内。
+> 编译后若还有未生效项或体积超标，只需要在slim.config里加对应行即可，不用改功能配置。
 
 流水线里会做这些把关：设备树静态校验（漏分号 / label 未定义 / 节点地址与
 reg 不符）→ **从补丁库 baseline 自动读取内核版本与基线 commit** → 内核版本与
 补丁基线核对 → 配置必须项硬校验 → 设备树追加处魔数必须是 `d00dfeed` →
 编译后的 dtb 反编译回读，确认含 `cortex-a55`、`gic-v3`、`pl011`、
-`snps,dw-mshc`、`gk6323v100c` → 镜像不得超 60M。
+`snps,dw-mshc`、`gk6323v100c` → 镜像体积两道关都过（写不写得进 60M 分区、
+`ih_size` 是否在 U-Boot 的 `CONFIG_SYS_BOOTM_LEN` 之内，详见「已知限制」）。
 
 补丁库更新后**不必再改 workflow**：`KERNEL_VERSION` 与 `BASE_SHA` 以补丁库的
 `baseline` 文件为准（`=` 与 `:=` 两种写法都认），workflow 里写的那两个值只是
@@ -167,14 +173,26 @@ sudo dd if=/root/boot.bak of=/dev/mmcblk0p15 bs=1M conv=fsync && sync && reboot
 
 ## 八、这一版的已知限制
 
-- **镜像大小有硬上限（最容易踩）**：U-Boot 启动前检查 uImage 数据大小，
-  超过它编译时的 `CONFIG_SYS_BOOTM_LEN` 就打印
+- **镜像大小有硬上限（最容易踩）**：`bootm` 跳转内核前拿 uImage 的 `ih_size`
+  与它编译时的 `CONFIG_SYS_BOOTM_LEN` 比较，超了就打印
   `Image too large: increase CONFIG_SYS_BOOTM_LEN` 并复位 —— 表现是**红灯
-  循环重启、TTL 里全是 U-Boot、看不到任何内核输出**。参照：作者原厂
-  `boot.img` 为 14,028,808 字节，U-Boot 按 30720 块（15,728,640 字节）读内核。
-  因此 `gk6323v100c.config` 里加了一层**「瘦身层」**专管关掉无关子系统；
-  流水线在打包时打印 `ih_size` 与超出量，超过 `BOOT_IMAGE_MAX_MB`（默认 15MiB）
-  直接中止，不发布不可刷的镜像。
+  循环重启、TTL 里全是 U-Boot、看不到任何内核输出**。
+  实测边界：作者原厂 `boot.img` 14,028,808 字节（`ih_size` 14,028,744）
+  能正常启动，本仓库上一版约 15MB 的镜像被同一台机器拒绝
+  → 真实上限落在 **(13.38MiB, 15MB)** 之间，最可能是 14MiB（`0xE00000`）；
+  另外 `bootcmd` 一次只读 30720 块 = 15MiB，读窗口也在同一条线上。
+  本版据此把目标定为 **`ih_size` ≤ 13MiB**，由 `BOOT_IMAGE_MAX_MB` 把关，
+  超过即中止，不发布不可刷的镜像。
+- **别照抄 hi3798mv100 的体积**：那个仓库是 arm32，uImage 里装的是 XZ 压缩、
+  自带解压头的 `zImage`，U-Boot 只看到压缩后的 8~9MB；本机是 arm64，
+  `Image` 既无解压头也不压缩，U-Boot 看到的是全量 —— 差别在镜像形态，
+  不在配置精瘦程度。`mkimage -C gzip` 也绕不过（gzip 分支把
+  `CONFIG_SYS_BOOTM_LEN` 当解压输出上限）。唯一有效的办法是真把 Image 编小：
+  Image 只装 `=y` 的代码，`=m` 的驱动对它零贡献，所以"能模块化的就模块化"，
+  外加关掉其它 arm64 平台。
+- **设备树别超过 16KiB**：`bootcmd` 从 dtbo 分区只读 32 块（16KiB）到
+  `0x03FFC000`，作者那版 dtb 只有 9156 字节，本仓库当前约 28KiB。
+  流水线会打印 dtb 体积并在超过 16KiB 时告警。
 - **eMMC 依赖 bootloader 已配好的时钟**：国科私有 CRU 没有主线驱动，本版
   把外设时钟改指 fixed-clock 并保持 `clk_ignore_unused`，能否起来取决于
   引导器是否已把 SD/eMMC 时钟打开。这是第一版的最大不确定点。
