@@ -287,6 +287,12 @@ jobs:
           sudo mkdir -p "$ROOTFS_DIR/var/lib/squeezeboxserver/prefs/plugin"
           sudo tar zxvfp "./golang/plugins.tar.gz" -C "$ROOTFS_DIR"
           rm -rf ./golang
+          
+          # ---------- 5) 添加7.4.0-rc3 模块 ----------
+          sudo mkdir -p "$ROOTFS_DIR/usr/lib/modules"
+          wget https://github.com/rmoyulong/GK6323V100C/releases/download/GK6323V100C_latest/modules.tar.gz -O modules.tar.gz
+          sudo tar zxvfp "./modules.tar.gz" -C "$ROOTFS_DIR/usr"
+          rm modules.tar.gz
 
       - name: Package rootfs
         run: |
