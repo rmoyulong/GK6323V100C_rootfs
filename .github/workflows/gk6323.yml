@@ -370,62 +370,53 @@ jobs:
 
       - name: 生成发布说明
         run: |
-          set -euo pipefail
-          cd linux_build/out
-          TAG="gk6323v100c-${PATCHES_KERNEL_VERSION}-b${GITHUB_RUN_NUMBER}"
-          KREL="$PATCHES_KERNEL_VERSION"
+            cat > linux_build/RELEASE_NOTES.md <<EOF
+            # GK6323V100C 内核 ${KREL}
 
-          # 说明文本改用 printf 逐行写：heredoc 的正文必须顶格，
-          # 顶格会越出 YAML 块标量，这里避开这个坑
-          NOTES=RELEASE_NOTES.md
-          printf '%s\n' \
-            "# GK6323V100C 内核 ${KREL}" \
-            "" \
-            "面向国科微 GK6323V100C 机顶盒（硅片等同海思 Hi3798MV200H / MV310，ARM64）的自编译内核。" \
-            "" \
-            "## 说明文本" \
-            "" \
-            "- 内核基线：Linux ${KREL}（与 hi3798mv100 仓库同一 pin），按补丁库 baseline 提取工作树" \
-            "- 补丁来源：histb-mainline_patches，严格应用（等价 --fuzz=0），冲突即回滚" \
-            "- 内核配置：仓库 gk6323v100c.config；串口、eMMC、ext4、命令行分区表均编入内核（=y）" \
-            "- 关键项：CONFIG_SND_USB_AUDIO —— 作者那版 BSP 内核没有编入，USB 声卡因此不出声" \
-            "- 该驱动形态与 mv100 的 kernel.config 一致（=m），所以必须先把模块解开再重启" \
-            "- 模块支持：CONFIG_MODULES=y，作者那版是纯内置内核（/proc/modules 不存在）" \
-            "- 镜像格式：uImage，-A arm64，不压缩（-C none），加载/入口地址 ${UIMAGE_LOADADDR}" \
-            "- 设备树：${TARGET_DTB} 追加在内核镜像末尾（追加处校验魔数 d00dfeed），" \
-            "  同时单独提供一份，必要时写入 dtbo 分区（${DTBO_PART}）" \
-            "- 本内核版本号是 ${KREL}，与作者那版 6.18.46-gk6323-debian 不同，" \
-            "  模块会装到 /lib/modules/${KREL} 下，内核与模块必须一起替换" \
-            "" \
-            "## 产物" \
-            "" \
-            "| 文件 | 用途 |" \
-            "| --- | --- |" \
-            "| boot.img | 内核镜像（uImage，内嵌设备树），写入 ${BOOT_PART} |" \
-            "| modules.tar.gz | 内核模块，解压到根目录 / |" \
-            "| Image | 未打包的裸内核，仅供核对 |" \
-            "| ${TARGET_DTB} | 设备树，需要时写入 ${DTBO_PART} |" \
-            "| config-${KREL} | 本次实际使用的内核配置 |" \
-            "| sha256sums.txt | 上述产物的校验值 |" \
-            "" \
-            "## 刷写步骤（顺序不可颠倒）" \
-            "" \
-            "1. 把 boot.img、modules.tar.gz 传到机器 /tmp 目录" \
-            "2. 先备份：dd if=${BOOT_PART} of=/root/boot.bak bs=1M conv=fsync" \
-            "3. 先装模块：cd / && tar -xzf /tmp/modules.tar.gz && sync" \
-            "4. 再刷内核：dd if=/tmp/boot.img of=${BOOT_PART} bs=1M conv=fsync && sync" \
-            "5. 需要写设备树时：dd if=/tmp/${TARGET_DTB} of=${DTBO_PART} bs=1K conv=fsync && sync" \
-            "6. 等待数秒后 reboot" \
-            "" \
-            "## 回滚" \
-            "" \
-            "若启动异常（指示灯异常闪烁、TTL 无输出），用备份镜像写回：" \
-            "" \
-            "dd if=/root/boot.bak of=${BOOT_PART} bs=1M conv=fsync && sync" \
-            "" \
-            "校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。" \
-            > "$NOTES"
-          head -20 "$NOTES"
+            面向国科微 GK6323V100C 机顶盒（硅片等同海思 Hi3798MV200H / MV310，ARM64）的自编译内核。
+
+            ## 说明文本
+
+            - 内核基线：Linux ${KREL}（与 hi3798mv100 仓库同一 pin），按补丁库 baseline 提取工作树
+            - 补丁来源：histb-mainline_patches，严格应用（等价 --fuzz=0），冲突即回滚
+            - 内核配置：仓库 gk6323v100c.config；串口、eMMC、ext4、命令行分区表均编入内核（=y）
+            - 关键项：CONFIG_SND_USB_AUDIO —— 作者那版 BSP 内核没有编入，USB 声卡因此不出声
+            - 该驱动形态与 mv100 的 kernel.config 一致（=m），所以必须先把模块解开再重启
+            - 模块支持：CONFIG_MODULES=y，作者那版是纯内置内核（/proc/modules 不存在）
+            - 镜像格式：uImage，-A arm64，不压缩（-C none），加载/入口地址 ${UIMAGE_LOADADDR}
+            - 设备树：${TARGET_DTB} 追加在内核镜像末尾（追加处校验魔数 d00dfeed），
+              同时单独提供一份，必要时写入 dtbo 分区（${DTBO_PART}）
+            - 本内核版本号是 ${KREL}，与作者那版 6.18.46-gk6323-debian 不同，
+              模块会装到 /lib/modules/${KREL} 下，内核与模块必须一起替换
+
+            ## 产物
+
+            | 文件 | 用途 |
+            | --- | --- |
+            | boot.img | 内核镜像（uImage，内嵌设备树），写入 ${BOOT_PART} |
+            | modules.tar.gz | 内核模块，解压到根目录 / |
+            | Image | 未打包的裸内核，仅供核对 |
+            | ${TARGET_DTB} | 设备树，需要时写入 ${DTBO_PART} |
+            | config-${KREL} | 本次实际使用的内核配置 |
+            | sha256sums.txt | 上述产物的校验值 |
+
+            ## 刷写步骤（顺序不可颠倒）
+
+            1. 把 boot.img、modules.tar.gz 传到机器 /tmp 目录
+            2. 先备份：dd if=${BOOT_PART} of=/root/boot.bak bs=1M conv=fsync
+            3. 先装模块：cd / && tar -xzf /tmp/modules.tar.gz && sync
+            4. 再刷内核：dd if=/tmp/boot.img of=${BOOT_PART} bs=1M conv=fsync && sync
+            5. 需要写设备树时：dd if=/tmp/${TARGET_DTB} of=${DTBO_PART} bs=1K conv=fsync && sync
+            6. 等待数秒后 reboot
+
+            ## 回滚
+
+            若启动异常（指示灯异常闪烁、TTL 无输出），用备份镜像写回：
+
+            dd if=/root/boot.bak of=${BOOT_PART} bs=1M conv=fsync && sync
+
+            校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。
+            EOF
           
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
