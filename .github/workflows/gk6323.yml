@@ -764,7 +764,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: gk6323v100c-${{ env.PATCHES_KERNEL_VERSION }}-b${{ github.run_number }}
+          tag_name: GK6323V100C_latest
           body_path: linux_build/out/RELEASE_NOTES.md
           allowUpdates: true
           replacesArtifacts: true
