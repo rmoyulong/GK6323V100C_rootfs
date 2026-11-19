@@ -266,4 +266,5 @@ sudo dd if=/root/boot.bak of=/dev/mmcblk0p15 bs=1M conv=fsync && sync && reboot
   不是硬件容量。真机导出设备树的 `memory@0 = 0x80000000` 与真机
   `/proc/meminfo` 的 `MemTotal: 2018984 kB` 才作数（两者吻合）。
   这个值写错方向都会出事：写小了白白少认一半内存，写大了内核会遍历并不存在的
-  物理页、在 console 建立之前挂住。流水线已对它做硬校验。
+  物理页、在 console 建立之前挂住。流水线会把它与真机值比对，不一致时告警
+  （**不中止**，避免像 2026-11-19 那次用 U-Boot 的 1 GiB 误杀正确的 2GiB）。

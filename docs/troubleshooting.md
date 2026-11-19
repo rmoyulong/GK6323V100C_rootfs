@@ -238,6 +238,32 @@ blkdevparts`），却停在第三行之前。
   `A="x clk_ignore_unused y"; v="$(grep -oE "clk_ignore_unused=[^ ]*" <<< "$A" | head -1)"`，
   退出码即 1；末尾加 `|| true` 后为 0。
 
+### 19. 设备树体积诊断打出 GB 级数字，或被「内存超过 1024 MiB」拦下（2026-11-19 定位）
+
+现象（2026-11-19 真机日志，dtb 总共才 3880 字节）：
+
+```
+  ├─ 保留内存表 : 939524056 字节
+  ├─ 结构块 : 2483879936 字节
+  └─ 字符串块 : 1543569408 字节
+Error: 设备树声明的内存 2048 MiB 超过本机实测的 1024 MiB
+```
+
+**这是诊断脚本自身的两个 bug，设备树没有问题**：
+
+- 根因一（字节序读反）：FDT/DTB 是**大端**格式，而诊断用 `od -t u4` 默认按主机字节序
+  （x86 为小端）读，把 `off_dt_struct` 的真值 `0x38`(56) 读成 `0x38000000`(939524096)，
+  减去 40 之后正好得到日志里的 `939524056`。修法：所有头字段改用 `od --endian=big -t u4`。
+- 根因二（内存误判）：拦截拿的是 U-Boot 打印的 `DRAM: 1 GiB`，那是 U-Boot **自己启动时的
+  可映射窗口**，不是整机物理内存。真机 `hwinfo/hw1.txt` 的 `memory@0 = 0x80000000`（2GiB）
+  与 `hwinfo/hw2.txt` 的 `MemTotal: 2018984 kB` 才作数。修法：判据改为与 2GiB 比对，
+  不一致**只告警、不中止**。
+- 另加 FDT 完整性校验：魔数必须是 `d00dfeed`、头里的 `totalsize` 必须等于文件大小、
+  各块偏移+大小不得越界；不满足先报"文件损坏"，绝不拿错乱数字继续往下判断。
+- 自查手法：真机 dtb 的头字段真值约为 `off_dt_struct=0x38`、`off_mem_rsvmap=0x28`、
+  `size_dt_struct` 几千字节；若读出来是 `0x38000000` 这种量级，就是字节序反了。
+
+
 ## 二、刷写与启动阶段
 
 ### 0. 刷完红灯循环重启
@@ -251,7 +277,7 @@ blkdevparts`），却停在第三行之前。
 - 自查：`sudo bash scripts/check-board-dtbo.sh`，应打印
   `goke,gk6323v100c` / `arm,cortex-a55` / `arm,gic-v3`。
 
-### 1. TTL 一个字都没有（2026-11-19 已定位候选根因）
+### 1. TTL 一个字都没有（2026-11-19 复核：首要嫌疑是漏刷 `p10`）
 
 现象：U-Boot 段一切正常，接着是
 
@@ -271,6 +297,21 @@ INFO:    SPSR = 0x3c5
 ```
 
 之后串口再无任何输出，**也不复位**（注意与红灯循环区分开）。
+
+**2026-11-19 复核结论：首要嫌疑是只刷了 `p15`、漏刷 `p10`。**
+- arm64 内核只能从 `x0` 收设备树 —— `arch/arm64/kernel/head.S` 里
+  `mov x21, x0`（注释即 "x0 = physical address to the FDT blob"），
+  `setup.c` 再用 `setup_machine_fdt(__fdt_pointer)` 校验；
+  **arm64 没有 arm32 那种 `ARM_APPENDED_DTB` / `ARM64_APPENDED_DTB` 配置项**，
+  也没有任何"从 Image 末尾自己翻 dtb"的代码，所以"内嵌 dtb"在 arm64 上**不起作用**。
+- 日志里打的是 `ATAGS [...]` 而不是 `using: FDT`，正是"内核没走 FDT 路径"的信号。
+- 作者原厂 `boot.img` 里**也没有**追加 dtb：在其中搜到的那个 `d00dfeed`，
+  其 `totalsize` 只有 131 字节，是不合法的巧合字节（误报）。作者的设备树来自
+  `dtbo` 分区 —— 他的 `dtbo.img` 开头就是 `d00dfeed`，`totalsize` 9156 字节。
+- 本仓库 `scripts/flash-boot.sh` 的 `-d` 参数说明写着「真机用的是 dtbo 分区里的 dtb，
+  不是内嵌那份」，README 第五节也把"刷设备树"列为**必须步骤**。
+  **刷内核时必须一并写 `p10`**（或直接用 `flash-boot.sh -d <dtb>`），漏了这一步，
+  内核等于没有设备树。
 
 这一串其实说明了两件好事：镜像大小过关（U-Boot 收下了），ATF(BL31) 也把控制权
 交给了内核（`Entry point address = 0x2000000` 与 uImage 头的 `Load/Entry Point:
@@ -325,7 +366,9 @@ INFO:    SPSR = 0x3c5
    `MemTotal: 2018984 kB` 吻合。★ 别照 U-Boot 打印的
    `DDR Size: 1 GiB (Boot: 1 GiB)` 写 —— 那是 U-Boot 自己的可映射上限，不是
    硬件容量。写小了白白少认一半内存；写大了内核会遍历并不存在的物理页，
-   同样在 console 建立之前挂住。流水线已对这个值做硬校验。
+   同样在 console 建立之前挂住。流水线会把它与真机值（2GiB）比对，不一致时告警；
+   ★ **不做中止** —— 2026-11-19 那次正是拿 U-Boot 的 1 GiB 当上限，误杀了正确的
+   2GiB 配置（详见构建阶段第 19 条）。
 
 ### 2. 出 `Booting Linux` 后停住
 
