@@ -207,6 +207,37 @@ New value: CONFIG_NTFS3_FS=y
 
 ---
 
+### 18. 停在「内置命令行与早期控制台自检」，只打了 earlycon / console 两行就 `exit code 1`
+
+现象（2026-11-19 真机日志）：
+
+```
+OK   CMDLINE_FORCE=y，内置命令行 424 字节
+     （不加 mem= 限制：真机内存 2GiB，见设备树 memory 节点）
+     earlycon earlycon=pl011,mmio32,0xf8b00000,115200n8
+     console console=ttyAMA0,115200n8
+Error: Process completed with exit code 1.
+```
+
+本该打印 8 行（`earlycon console clk_ignore_unused root rootfstype rootwait panic
+blkdevparts`），却停在第三行之前。
+
+- 原因：与第 11 条同源，触发点是**无值标志**。回显写成
+  `v="$(grep -oE "…${k}=…" <<< "$CMDLINE_ARGS" | head -1 | sed …)"`，而
+  `clk_ignore_unused`、`rootwait` 这类没有 `=` 的参数让 `grep` 必然零匹配、返回 1；
+  步骤开着 `set -euo pipefail`，这条赋值即被判失败，`set -e` 当场杀掉整个步骤 ——
+  不打警告、不打诊断，日志里只剩一句 `exit code 1`。
+- 同一坑还埋在三处，这次只是恰好都命中了：`DTS_FILE`（`ls … | grep -v …` 零匹配）、
+  `DTS_BA`（dts 里没有 `bootargs` 时）、`MEM_REG`（没找到 memory reg 时）——
+  后两处一旦失败，紧跟着的「不一致告警」「请人工确认内存节点」就永远打不出来。
+- 处理（v17 已做）：四处一律补 `|| true`；新增**「工作流静态自检」**步骤，凡赋值语句
+  的命令替换里"管道后紧跟 `grep` / `head`"而末尾没有兜底的，**直接中止并打印行号**。
+  该检查用 `\|[[:space:]]+(grep|head)` 精确匹配真管道，正则里的 `|`（后面不跟空格）
+  不会被误伤，`od … | tr …` 这类不会零匹配的写法也不受影响。
+- 自查手法：本地 `set -euo pipefail` 下跑
+  `A="x clk_ignore_unused y"; v="$(grep -oE "clk_ignore_unused=[^ ]*" <<< "$A" | head -1)"`，
+  退出码即 1；末尾加 `|| true` 后为 0。
+
 ## 二、刷写与启动阶段
 
 ### 0. 刷完红灯循环重启

@@ -30,6 +30,17 @@ name: GK6323V100C 内核自动构建
 #      内核与模块必须一起替换。
 #   c) 真机运行的设备树来自 dtbo 分区（作者 boot.img 内没有 dtb）。因此
 #      编译出的 dtb **必须写入 dtbo 分区**才能生效；内嵌的那份是冗余备份。
+#      注意：legacy uImage 的 bootm 不会解析「追加在 Image 末尾的 dtb」，
+#      要让内核拿到设备树，必须 `bootm <kernel> - <fdt>` 显式传第三个参数。
+#
+# 纪律（踩过坑，勿犯）：
+#   set -euo pipefail 之下，任何「赋值 + 管道」都必须兜底。写成
+#       VAR="$( … | grep … )"      或      VAR="$( … | head -1 )"
+#   时，grep 零匹配（或 head 提前退出引发 SIGPIPE）会让整条管道返回非零，
+#   赋值命令随即被判失败，set -e 当场杀掉步骤 —— 之前打的诊断一个字都留不下，
+#   日志里只剩 "Process completed with exit code 1"。
+#   已因此连踩三次：`yes "" | make olddefconfig`、从 .config 取首行、命令行回显。
+#   末尾一律补 `|| true`；漏网的本文件「工作流静态自检」步骤会拦下。
 # ============================================================
 
 on:
@@ -101,6 +112,31 @@ jobs:
           done
           chmod +x apply_histb_patches.sh
           ls -lh apply_histb_patches.sh "$FRAGMENT" "$BOARD_DTS"
+
+      - name: 工作流静态自检（防 set -e + pipefail 下的裸管道赋值）
+        run: |
+          set -euo pipefail
+          # 本步骤检查 workflow 自身，专门拦一种很难定位的失败：
+          #   set -euo pipefail 之下，写成
+          #       VAR="$( … | grep … )"   或   VAR="$( … | head -1 )"
+          #   时，grep 零匹配、或 head 提前退出把上游打成 SIGPIPE，整条管道返回非零，
+          #   这条赋值命令即被判失败 —— set -e 当场杀掉整个步骤，诊断一个字都留不下，
+          #   日志里只剩一句 "Process completed with exit code 1"。
+          #   本项目已因此连踩三次：`yes "" | make olddefconfig`（SIGPIPE）、从 .config
+          #   取行、以及 2026-11-19 那次的命令行回显（clk_ignore_unused / rootwait 是
+          #   「无值标志」，grep 必然零匹配，只打了 earlycon / console 两行就断）。
+          # 规则：赋值语句的命令替换里，管道后紧跟 grep 或 head 的，末尾必须有兜底。
+          #   ★ 注意区分「管道 |」与「正则里的 |」—— 后者后面不跟空格（如 `(a|b)`），
+          #     所以模式写成 `\|[[:space:]]+(grep|head)`，不会误伤 $(lookup "^(A=|# B)")
+          #     这类调用，也不会误伤 `od … | tr …`。
+          PAT='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="?\$\(.*\|[[:space:]]+(grep|head)'
+          BAD="$(grep -nE "$PAT" .github/workflows/gk6323.yml | grep -v '|| true' | grep -v '|| echo' || true)"
+          if [ -n "$BAD" ]; then
+            echo "::error::发现未兜底的管道赋值 —— set -e + pipefail 下会静默杀掉步骤。请在命令替换末尾补 ' || true'："
+            printf '%s\n' "$BAD"
+            exit 1
+          fi
+          echo "OK   未发现未兜底的管道赋值"
 
       - name: 设备树静态校验（无 dtc 也能查出漏分号、label 未定义、地址不符）
         run: |
@@ -466,7 +502,12 @@ jobs:
           echo "OK   CMDLINE_FORCE=y，内置命令行 $(printf '%s' "$CMDLINE_ARGS" | wc -c) 字节"
           echo "     （不加 mem= 限制：真机内存 2GiB，见设备树 memory 节点）"
           for k in earlycon console clk_ignore_unused root rootfstype rootwait panic blkdevparts; do
-            v="$(grep -oE "(^|[[:space:]])${k}=[^[:space:]]*" <<< "$CMDLINE_ARGS" | head -1 | sed 's/^[[:space:]]*//')"
+            # ★ 末尾的 `|| true` 不能省。clk_ignore_unused / rootwait 是「无值标志」，
+            #   上面的 grep 对它们必然零匹配、返回 1；本步骤开着 set -euo pipefail，
+            #   这条赋值命令于是被判成失败，set -e 立刻杀掉整个步骤 —— 日志里只剩
+            #   前两行回显加一句 "Process completed with exit code 1"，毫无线索。
+            #   2026-11-19 那次构建正是停在这里：earlycon / console 打印完就断了。
+            v="$(grep -oE "(^|[[:space:]])${k}=[^[:space:]]*" <<< "$CMDLINE_ARGS" | head -1 | sed 's/^[[:space:]]*//' || true)"
             if [ -z "$v" ]; then
               if grep -qE "(^|[[:space:]])${k}([[:space:]]|$)" <<< "$CMDLINE_ARGS"; then
                 v="（无值标志，已存在）"
@@ -479,9 +520,11 @@ jobs:
           # 一致性告警：设备树 /chosen/bootargs 与内核内置命令行应当**逐字一致**。
           # 两处都写是有意的：引导器把 fdt 交给内核时走设备树那份；CMDLINE_FORCE
           # 生效时走内核那份。只改一处，另一条路就会带上旧参数。
-          DTS_FILE="$(ls ../dts/*.dts 2>/dev/null | grep -v '\.orig\.' | head -1)"
+          # 同样兜底：一个 *.dts 都没匹配到（或只有 .orig 备份）时 grep 返回 1，
+          # pipefail 会把这条赋值判失败，后面那句「不一致告警」永远打不出来。
+          DTS_FILE="$(ls ../dts/*.dts 2>/dev/null | grep -v '\.orig\.' | head -1 || true)"
           if [ -n "$DTS_FILE" ]; then
-            DTS_BA="$(grep -oE 'bootargs = "[^"]*"' "$DTS_FILE" | head -1 | sed 's/^bootargs = "//; s/"$//')"
+            DTS_BA="$(grep -oE 'bootargs = "[^"]*"' "$DTS_FILE" | head -1 | sed 's/^bootargs = "//; s/"$//' || true)"
             if [ -z "$DTS_BA" ]; then
               echo "::warning::$DTS_FILE 里没找到 chosen/bootargs，无法比对一致性"
             elif [ "$DTS_BA" != "$CMDLINE_ARGS" ]; then
@@ -594,14 +637,18 @@ jobs:
           echo "引导器读取窗口  ：16384 字节（bootcmd: mmc read 0 0x03FFC000 0x19000 0x20）"
           echo "窗口占用        ：$((DTB_SZ * 100 / 16384))%（剩余 $((16384 - DTB_SZ)) 字节余量）"
           echo "参照：作者那版 dtbo 里的 dtb 是 9156 字节"
-          echo "节点数（按 dts 源统计）：$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_@,.-]*[[:space:]]*\{' "$BOARD_DTS")"
+          # grep -c 零匹配时会打印 0 但返回 1，兜底一下更稳（本行在 echo 内，其实
+          # 不会触发 set -e，但保持与其它取值处一致的写法）。
+          echo "节点数（按 dts 源统计）：$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_@,.-]*[[:space:]]*\{' "$BOARD_DTS" || true)"
           # 内存节点：必须与真机实测一致。
           # 作者那版 dtb 的 memory 写的是 2GiB(0x80000000)，而本机 U-Boot 打印的是
           #   DRAM: 1 GiB  /  DDR Size: 1 GiB (Boot: 1 GiB)
           # eMMC 也只有 7456M(约 7.3GB) 而非标称 32GB —— 不是作者那台 2+32G。
           # 声明过大的后果很隐蔽：内核在 free_area_init 阶段遍历并标记这些并不存在
           # 的物理页，此时 console 尚未建立，表现为串口一个字都没有、也没有报错。
-          MEM_REG="$(grep -oE '0x00 0x00 0x00 0x[0-9a-f]+' "$BOARD_DTS" | head -1)"
+          # 找不到 memory reg 时必须能落到下面的告警分支，所以这里也要兜底；
+          # 否则 set -e 会在赋值处直接退出，那句「请人工确认内存节点」永远打不出来。
+          MEM_REG="$(grep -oE '0x00 0x00 0x00 0x[0-9a-f]+' "$BOARD_DTS" | head -1 || true)"
           if [ -z "$MEM_REG" ]; then
             echo "::warning::设备树里没找到 (0x00 0x00 0x00 0x…) 形式的 memory reg，请人工确认内存节点"
           else
@@ -743,6 +790,7 @@ jobs:
           echo "内核 release: $KREL"
           echo "=== 产物列表 ==="
           ls -lh
+
       - name: 生成发布说明并校验产物
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
