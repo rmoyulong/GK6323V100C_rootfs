@@ -47,7 +47,7 @@
 
 	chosen {
 		/* 与 bootargs 分区一致；root= 亦由此下发 */
-		bootargs = "console=ttyAMA0,115200n8 console=tty0 clk_ignore_unused net.ifnames=0 root=/dev/mmcblk0p18 rootfstype=ext4 rootwait rw panic=-1 blkdevparts=mmcblk0:1M(fastboot),512K(bootargs),512K(bootargsbak),20M(recovery),2M(deviceinfo),8M(securestore),2M(atf),8M(baseparam),8M(pqparam),2M(dtbo),10M(logo),10M(logobak),20M(fastplay),20M(recoverybak),60M(boot),20M(misc),20M(trustedcore),-(rootfs)";
+		bootargs = "earlycon=pl011,mmio32,0xf8b00000,115200n8 console=ttyAMA0,115200n8 console=tty0 clk_ignore_unused net.ifnames=0 root=/dev/mmcblk0p18 rootfstype=ext4 rootwait rw panic=-1 blkdevparts=mmcblk0:1M(fastboot),512K(bootargs),512K(bootargsbak),20M(recovery),2M(deviceinfo),8M(securestore),2M(atf),8M(baseparam),8M(pqparam),2M(dtbo),10M(logo),10M(logobak),20M(fastplay),20M(recoverybak),60M(boot),20M(misc),20M(trustedcore),-(rootfs)";
 		stdout-path = "serial0:115200n8";
 	};
 

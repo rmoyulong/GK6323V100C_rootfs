@@ -669,9 +669,18 @@ jobs:
           echo "内核 release: $KREL"
           echo "=== 产物列表 ==="
           ls -lh
-          
-      - name: 生成发布说明
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: gk6323v100c-linux-${{ env.PATCHES_KERNEL_VERSION }}
+          if-no-files-found: error
+          retention-days: 90
+          path: linux_build/out/*
+
+      - name: 生成发布说明并校验产物
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PATCHES_KERNEL_VERSION: ${{ env.PATCHES_KERNEL_VERSION }}
           TARGET_DTB: ${{ env.TARGET_DTB }}
           UIMAGE_LOADADDR: ${{ env.UIMAGE_LOADADDR }}
@@ -679,8 +688,11 @@ jobs:
           DTBO_PART: ${{ env.DTBO_PART }}
         run: |
           set -euo pipefail
+          cd linux_build/out
           KREL="$PATCHES_KERNEL_VERSION"
-          cat > linux_build/RELEASE_NOTES.md <<-EOF
+          NOTES=RELEASE_NOTES.md
+
+          cat > "$NOTES" <<EOF
           # GK6323V100C 内核 ${KREL}
 
           面向国科微 GK6323V100C 机顶盒（真机 4×Cortex-A55 + GICv3，ARM64）的自编译内核。
@@ -737,17 +749,30 @@ jobs:
 
           校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。
           EOF
-          head -20 linux_build/RELEASE_NOTES.md
+          sed -i 's/^ *//' "$NOTES"
+          head -20 "$NOTES"
+
+          CONFIG_ASSET="$(ls -1 config-* 2>/dev/null | head -1 || true)"
+          if [ -z "$CONFIG_ASSET" ]; then
+            echo "::error::out/ 里找不到 config-* 产物，无法随 Release 发布"
+            exit 1
+          fi
+          echo "附带发布本次内核配置：$CONFIG_ASSET"
 
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: GK6323V100C_latest
-          body_path: linux_build/RELEASE_NOTES.md
+          tag_name: gk6323v100c-${{ env.PATCHES_KERNEL_VERSION }}-b${{ github.run_number }}
+          body_path: linux_build/out/RELEASE_NOTES.md
           allowUpdates: true
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           files: |
-            linux_build/out/*
+            linux_build/out/boot.img
+            linux_build/out/${{ env.TARGET_DTB }}
+            linux_build/out/modules.tar.gz
+            linux_build/out/Image
+            linux_build/out/sha256sums.txt
+            linux_build/out/config-*
