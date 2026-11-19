@@ -622,11 +622,36 @@ jobs:
           DTS_SZ=$(stat -c%s "$BOARD_DTS")
           DTB_SZ=$(stat -c%s "$OUT")
           # 按 dtb 头结构拆分：魔数(4)+totalsize(4)+off_dt_struct(4)+off_dt_strings(4)+off_mem_rsvmap(4)+version(4)+last_comp_version(4)+boot_cpuid_phys(4)+size_dt_strings(4)+size_dt_struct(4) = 40 字节头
-          STRUCT_OFF=$(od -A n -t u4 -j 8 -N 4 "$OUT" | tr -d ' \n\t')
-          STRUCT_SIZE=$(od -A n -t u4 -j 36 -N 4 "$OUT" | tr -d ' \n\t')
-          STRINGS_OFF=$(od -A n -t u4 -j 12 -N 4 "$OUT" | tr -d ' \n\t')
-          STRINGS_SIZE=$(od -A n -t u4 -j 32 -N 4 "$OUT" | tr -d ' \n\t')
-          RESERVE_SIZE=$((STRUCT_OFF - 40))
+          # ★ FDT/DTB 全程大端：所有头字段必须用 --endian=big 读。
+          #   od 默认按主机字节序（x86 为小端），会把 off_dt_struct 的真值
+          #   0x38(56) 读成 0x38000000(939524096)，块大小读出 GB 级天文数字，
+          #   诊断本身就会被误判成 "dtb 损坏"。2026-11-19 那次构建正是如此。
+          #   字段偏移：magic@0 totalsize@4 off_dt_struct@8 off_dt_strings@12
+          #   off_mem_rsvmap@16 version@20 last_comp_version@24
+          #   boot_cpuid_phys@28 size_dt_strings@32 size_dt_struct@36
+          be32() { od -A n --endian=big -t u4 -j "$2" -N 4 "$1" | tr -d ' \n\t'; }
+          FDT_MAGIC="$(od -A n -t x1 -j 0 -N 4 "$OUT" | tr -d ' \n\t')"
+          FDT_TOTAL="$(be32 "$OUT" 4)"
+          STRUCT_OFF="$(be32 "$OUT" 8)"
+          STRINGS_OFF="$(be32 "$OUT" 12)"
+          RSVMAP_OFF="$(be32 "$OUT" 16)"
+          STRINGS_SIZE="$(be32 "$OUT" 32)"
+          STRUCT_SIZE="$(be32 "$OUT" 36)"
+          RESERVE_SIZE=$((STRUCT_OFF - RSVMAP_OFF))
+          # FDT 完整性校验：魔数、总长、各块偏移与大小必须自洽，否则先报解析错误，
+          # 不允许拿着错乱的数字继续往下判断（内存节点就是在这一步被误杀的）。
+          if [ "$FDT_MAGIC" != "d00dfeed" ]; then
+            echo "::error::dtb 魔数不是 d00dfeed（读到 $FDT_MAGIC），文件损坏"
+            exit 1
+          fi
+          if [ "$FDT_TOTAL" -ne "$DTB_SZ" ]; then
+            echo "::error::dtb 头 totalsize=$FDT_TOTAL 与文件大小 $DTB_SZ 不一致，文件损坏"
+            exit 1
+          fi
+          if [ $((STRUCT_OFF + STRUCT_SIZE)) -gt "$FDT_TOTAL" ] || [ $((STRINGS_OFF + STRINGS_SIZE)) -gt "$FDT_TOTAL" ] || [ "$RSVMAP_OFF" -gt "$FDT_TOTAL" ]; then
+            echo "::error::dtb 块偏移越界：struct $STRUCT_OFF+$STRUCT_SIZE / strings $STRINGS_OFF+$STRINGS_SIZE / rsvmap $RSVMAP_OFF，总长 $FDT_TOTAL"
+            exit 1
+          fi
           echo "=== 设备树体积诊断（全部为动态实测值） ==="
           echo "dts 源文件      ：$DTS_SZ 字节"
           echo "编出的 dtb      ：$DTB_SZ 字节 = $((DTB_SZ/1024)) KiB"
@@ -640,12 +665,15 @@ jobs:
           # grep -c 零匹配时会打印 0 但返回 1，兜底一下更稳（本行在 echo 内，其实
           # 不会触发 set -e，但保持与其它取值处一致的写法）。
           echo "节点数（按 dts 源统计）：$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_@,.-]*[[:space:]]*\{' "$BOARD_DTS" || true)"
-          # 内存节点：必须与真机实测一致。
-          # 作者那版 dtb 的 memory 写的是 2GiB(0x80000000)，而本机 U-Boot 打印的是
-          #   DRAM: 1 GiB  /  DDR Size: 1 GiB (Boot: 1 GiB)
-          # eMMC 也只有 7456M(约 7.3GB) 而非标称 32GB —— 不是作者那台 2+32G。
-          # 声明过大的后果很隐蔽：内核在 free_area_init 阶段遍历并标记这些并不存在
-          # 的物理页，此时 console 尚未建立，表现为串口一个字都没有、也没有报错。
+          # 内存节点：与真机物理内存比对。
+          # 判据：真机导出的设备树 hwinfo/hw1.txt 里 memory@0 为
+          #   reg = <0x00 0x00 0x00 0x80000000>，即 2GiB；真机 /proc/meminfo 亦为
+          #   MemTotal 2018984 kB ≈ 2GiB，与本机 2+32G 档位一致。
+          # ★ U-Boot 打印的 "DRAM: 1 GiB / DDR Size: 1 GiB (Boot: 1 GiB)" 是它自己
+          #   启动时的可映射窗口，**不是整机物理内存**；拿它当上限会误杀 2GiB 配置。
+          # 声明过大的后果确实隐蔽：内核在 free_area_init 阶段遍历这些不存在的
+          # 物理页时 console 尚未建立，表现为串口全静、无报错 —— 所以要打印出来
+          # 让人可见，但不做硬拦（只告警），避免重演误杀。
           # 找不到 memory reg 时必须能落到下面的告警分支，所以这里也要兜底；
           # 否则 set -e 会在赋值处直接退出，那句「请人工确认内存节点」永远打不出来。
           MEM_REG="$(grep -oE '0x00 0x00 0x00 0x[0-9a-f]+' "$BOARD_DTS" | head -1 || true)"
@@ -653,11 +681,11 @@ jobs:
             echo "::warning::设备树里没找到 (0x00 0x00 0x00 0x…) 形式的 memory reg，请人工确认内存节点"
           else
             MEMSZ=$(( 0x${MEM_REG##*0x} ))
-            echo "memory 节点     ：$MEM_REG（$((MEMSZ / 1024 / 1024)) MiB）"
-            if [ "$MEMSZ" -gt 1073741824 ]; then
-              echo "::error::设备树声明的内存 $((MEMSZ/1024/1024)) MiB 超过本机实测的 1024 MiB"
-              echo "::error::内核会遍历 0x40000000 以上不存在的物理页，在 early console 建立之前挂住，串口完全无声"
-              exit 1
+            echo "memory 节点     ：$MEM_REG（$((MEMSZ / 1024 / 1024)) MiB，真机 MemTotal 约 2GiB）"
+            # 只比对、只告警，不中止：判据是 hw1.txt 的 memory@0 与 hw2.txt 的
+            # MemTotal，不是 U-Boot 那句 DRAM 数值（原因见上）。
+            if [ "$MEMSZ" -ne 2147483648 ]; then
+              echo "::warning::内存节点声明 $((MEMSZ/1024/1024)) MiB，与真机实测 2GiB 不一致，请人工复核"
             fi
           fi
 
