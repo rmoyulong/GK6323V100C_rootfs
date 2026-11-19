@@ -209,24 +209,92 @@ New value: CONFIG_NTFS3_FS=y
 
 ## 二、刷写与启动阶段
 
-### 0. 刷完红灯循环重启（已发生过一次）
+### 0. 刷完红灯循环重启
 
-- 现象：刷入内核后机器红灯常亮、十几秒一循环地重启。
-- 原因：用的板级设备树是**海思 A53 + GIC-400** 那一支，而真机是
-  **A55 + GICv3**。内核按 `arm,gic-400` 的地址去初始化中断控制器，
-  硬件那里却是 GICv3，early init 直接失败，随后靠 SP805 看门狗复位。
-- 处理：
-  1. 用救砖包（HiTool 只勾 `boot.img` 与 `dtbo.img`）刷回原版；
-  2. 确认新内核配套的 dtb 是 `dts/gk6323v100c-chaoge-z71a.dts` 编出来的
-     （含 `cortex-a55` / `gic-v3`）；
-  3. 刷写时 dtb 一定要写进 `/dev/mmcblk0p10`。
+- 2026-11-18 那次的实际原因是**镜像超过 U-Boot 的 `CONFIG_SYS_BOOTM_LEN`**，
+  不是设备树 —— 日志里 U-Boot 明说 `Image too large: increase CONFIG_SYS_BOOTM_LEN`、
+  随即 `Must RESET board to recover`。详见第 6 条。
+- 设备树认错芯片（拿海思 A53 + GIC-400 的树去启动本机的 A55 + GICv3）确实也会
+  在 GIC 初始化阶段失败并复位，但那一次日志里没有这条症状；若日后遇到，
+  用救砖包刷回，并核对 dtb 是否来自 `dts/gk6323v100c-chaoge-z71a.dts`。
 - 自查：`sudo bash scripts/check-board-dtbo.sh`，应打印
   `goke,gk6323v100c` / `arm,cortex-a55` / `arm,gic-v3`。
 
-### 1. TTL 一个字都没有
+### 1. TTL 一个字都没有（2026-11-19 已定位候选根因）
 
-- 原因：DTB 没换（dtbo 分区还是旧的），或写错分区。
-- 处理：重写 dtbo 分区；核对 `boot = p15`、`dtbo = p10`。
+现象：U-Boot 段一切正常，接着是
+
+```
+## Booting kernel from Legacy Image at 04000000 ...
+   Loading Kernel Image ... OK
+ATAGS [0x00000100 - 0x000005E0], 1248Bytes
+
+Starting kernel ...
+
+Start ATF with aarch64 kernel...
+INFO:    BL31 Early setup
+NOTICE:  BL31: v2.0(debug):b05835d-dirty
+INFO:    BL31: Preparing for EL3 exit to normal world
+INFO:    Entry point address = 0x2000000
+INFO:    SPSR = 0x3c5
+```
+
+之后串口再无任何输出，**也不复位**（注意与红灯循环区分开）。
+
+这一串其实说明了两件好事：镜像大小过关（U-Boot 收下了），ATF(BL31) 也把控制权
+交给了内核（`Entry point address = 0x2000000` 与 uImage 头的 `Load/Entry Point:
+02000000` 一致）。坏消息是内核侧一行都没有 —— 而 arm64 内核在拿到**合法设备树**
+之前不会建立任何 console，所以这一类十有八九是**内核没拿到有效 fdt**。
+
+按顺序查：
+
+1. **先看 U-Boot 到底有没有把设备树交给内核。** 本机 `bootcmd` 是
+   ```
+   mmc read 0 0x08020000 0x10000 0x1000;   # atf 分区 -> 0x8020000
+   mmc read 0 0x03FFC000 0x19000 0x20;     # dtbo 分区 16KiB -> 0x03FFC000
+   mmc read 0 0x04000000 0x38000 0x7800;   # boot 分区 -> 0x04000000
+   bootm 0x04000000
+   ```
+   注意 `bootm` **没有第三个参数**。legacy uImage 路径下只有
+   `bootm <kernel> <initrd|-> <fdt>` 才显式传设备树；只写 `bootm <kernel>` 时，
+   U-Boot 用自己 `gd->fdt_blob`，也可能一个都不传。日志里那句 `ATAGS [...]`
+   （而不是 `using: FDT`）就是"没走 FDT 路径"的信号 —— arm64 内核不吃 ATAGS，
+   校验 magic 失败即挂住，而此时 console 尚未建立，所以串口全静。
+   在 U-Boot 里（`Autobooting in 1 seconds` 时按 **Ctrl+C**）执行并把输出留下来：
+   ```
+   bdinfo
+   fdt addr 0x03FFC000
+   fdt print /compatible
+   fdt print /memory
+   fdt print /chosen
+   printenv bootcmd bootargs
+   ```
+
+2. **显式把设备树传给内核，做一次对照实验。** 下面这组**不写环境变量**，
+   断电即失效，不会污染原厂环境：
+   ```
+   mmc read 0 0x08020000 0x10000 0x1000
+   mmc read 0 0x03FFC000 0x19000 0x20
+   mmc read 0 0x04000000 0x38000 0x7800
+   bootm 0x04000000 - 0x03FFC000
+   ```
+   第三个参数 `-` 表示没有 initrd，第四个 `0x03FFC000` 是 fdt 地址。
+   - 若这次看到内核输出了 → 根因就是"没传 fdt"，再固化：
+     ```
+     setenv bootcmd 'mmc read 0 0x08020000 0x10000 0x1000; mmc read 0 0x03FFC000 0x19000 0x20; mmc read 0 0x04000000 0x38000 0x7800; bootm 0x04000000 - 0x03FFC000'
+     saveenv
+     ```
+   - 若仍然全静 → 问题更早（ATF 传参或内存），把第 1 步几条的输出发出来再定。
+
+3. **dtbo 分区写的必须是本仓库的 dtb。** 内核用的 fdt 若来自 dtbo 分区，
+   只刷 `p15` 不够，`/dev/mmcblk0p10` 也要写。
+
+4. **内存节点必须等于真机值 `0x80000000`（2GiB）。** 依据是真机导出设备树
+   （`hwinfo/hw1.txt`）的 `memory@0`，与真机 `/proc/meminfo` 的
+   `MemTotal: 2018984 kB` 吻合。★ 别照 U-Boot 打印的
+   `DDR Size: 1 GiB (Boot: 1 GiB)` 写 —— 那是 U-Boot 自己的可映射上限，不是
+   硬件容量。写小了白白少认一半内存；写大了内核会遍历并不存在的物理页，
+   同样在 console 建立之前挂住。流水线已对这个值做硬校验。
 
 ### 2. 出 `Booting Linux` 后停住
 

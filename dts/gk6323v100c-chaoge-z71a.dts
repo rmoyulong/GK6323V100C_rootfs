@@ -51,6 +51,16 @@
 		stdout-path = "serial0:115200n8";
 	};
 
+	/*
+	 * 内存：2GiB，取自**真机导出的设备树**（hwinfo/hw1.txt 里的
+	 *   memory@0 { reg = <0x00 0x00 0x00 0x80000000>; }）
+	 * 与真机 /proc/meminfo 的 MemTotal: 2018984 kB，两者吻合。
+	 * ★ 不要被 U-Boot 那两行 "DRAM: 1 GiB" / "DDR Size: 1 GiB (Boot: 1 GiB)"
+	 *   误导：那是 U-Boot 自己的可映射上限（它启动内核只需 1GiB 就够），
+	 *   不代表硬件容量。写成 1GiB 会让内核白白少认一半内存。
+	 * 作者那版的 vdp@7f000000(2032MB) 与 framebuffer@7f511000 都在 2GiB 内，
+	 * 但本机第一阶段不用显示与硬解，故不写。
+	 */
 	memory@0 {
 		device_type = "memory";
 		reg = <0x00 0x00 0x00 0x80000000>;

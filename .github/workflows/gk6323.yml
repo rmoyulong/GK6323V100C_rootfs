@@ -263,6 +263,10 @@ jobs:
           # 控制台串口
           scripts/config --enable SERIAL_AMBA_PL011
           scripts/config --enable SERIAL_AMBA_PL011_CONSOLE
+          # 早期控制台：叠加层里已有 CONFIG_SERIAL_EARLYCON=y，这里再确认一次。
+          # ★ 别加 SERIAL_AMBA_PL011_EARLYCON —— 主线树里没有这个符号（那是 8250
+          #   系列的命名风格），PL011 的 earlycon 只受 SERIAL_EARLYCON 一个开关控制。
+          scripts/config --enable SERIAL_EARLYCON
           # eMMC：(设备树追加 "snps,dw-mshc") → pltfm + dw
           scripts/config --enable MMC
           scripts/config --enable MMC_BLOCK
@@ -328,8 +332,13 @@ jobs:
           # 模块支持：作者那版是纯内置内核（/proc/modules 不存在）
           scripts/config --enable MODULES
           scripts/config --enable MODULE_UNLOAD
-          # 启动参数交给 bootargs 分区传，不在内核里写死 root=
-          scripts/config --set-str CMDLINE ""
+          # 启动参数不再在这里置空：gk6323v100c.config 叠加层里已带上完整的
+          # CONFIG_CMDLINE 与 CONFIG_CMDLINE_FORCE=y（理由见该文件对应段落）。
+          # ★ 这里原本是 `scripts/config --set-str CMDLINE ""`。本步骤在 merge 之后
+          #   执行，保留它会把叠加层那行长命令行又清成空串，earlycon 随之消失 ——
+          #   带板阶段最要紧的那条早期串口输出就没了。切勿再加回来。
+          # ★ 长命令行一律写在叠加层文件里，不在此处用 --set-str 拼：不同版本的
+          #   scripts/config 对含空格/逗号/括号的字符串转义行为并不一致。
 
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
@@ -432,9 +441,56 @@ jobs:
             printf '    %-22s %s\n' "$s" "${V:-（不在 .config 中）}"
           done
 
-          if ! grep -qE '^CONFIG_CMDLINE=""$' .config; then
-            echo "::error::CONFIG_CMDLINE 不是空串，启动参数应与 bootargs 分区一致"
+          echo "=== 内置命令行与早期控制台自检（带板阶段最要紧：能不能看见内核输出）==="
+          # 三条硬校验，缺一条就中止 —— 没有 earlycon 时，内核在 console 建立前
+          # 挂住的表现就是串口完全无声，连排查线索都拿不到。
+          CMDLINE_VAL="$(lookup '^CONFIG_CMDLINE=')"
+          if [ -z "$CMDLINE_VAL" ] || grep -qE '^CONFIG_CMDLINE=""$' .config; then
+            echo "::error::CONFIG_CMDLINE 为空 —— 内核拿不到 earlycon=，串口在 console 建立前不会有任何输出"
             exit 1
+          fi
+          if ! grep -q 'earlycon=pl011' <<< "$CMDLINE_VAL"; then
+            echo "::error::CONFIG_CMDLINE 里没有 earlycon=pl011 —— 早期串口输出不会生效"
+            exit 1
+          fi
+          if ! grep -qE '^CONFIG_CMDLINE_FORCE=y$' .config; then
+            echo "::error::CONFIG_CMDLINE_FORCE 未开启 —— 引导器的 cmdline 会盖掉内核内置参数，earlycon 可能不生效"
+            exit 1
+          fi
+          # 回显：先去掉 CONFIG_CMDLINE= 前缀与两端引号，得到纯参数串再逐项匹配。
+          # ★ 两个坑：紧跟在第一个引号后面的那个参数（本机正是 earlycon=）会因为
+          #   "前面既不是行首也不是空格"而匹配不到；clk_ignore_unused / rootwait
+          #   这类**无值标志**也不能用 k= 去匹配。
+          CMDLINE_ARGS="${CMDLINE_VAL#CONFIG_CMDLINE=}"
+          CMDLINE_ARGS="${CMDLINE_ARGS%\"}"; CMDLINE_ARGS="${CMDLINE_ARGS#\"}"
+          echo "OK   CMDLINE_FORCE=y，内置命令行 $(printf '%s' "$CMDLINE_ARGS" | wc -c) 字节"
+          echo "     （不加 mem= 限制：真机内存 2GiB，见设备树 memory 节点）"
+          for k in earlycon console clk_ignore_unused root rootfstype rootwait panic blkdevparts; do
+            v="$(grep -oE "(^|[[:space:]])${k}=[^[:space:]]*" <<< "$CMDLINE_ARGS" | head -1 | sed 's/^[[:space:]]*//')"
+            if [ -z "$v" ]; then
+              if grep -qE "(^|[[:space:]])${k}([[:space:]]|$)" <<< "$CMDLINE_ARGS"; then
+                v="（无值标志，已存在）"
+              else
+                v="（缺）"
+              fi
+            fi
+            printf '     %-18s %s\n' "$k" "$v"
+          done
+          # 一致性告警：设备树 /chosen/bootargs 与内核内置命令行应当**逐字一致**。
+          # 两处都写是有意的：引导器把 fdt 交给内核时走设备树那份；CMDLINE_FORCE
+          # 生效时走内核那份。只改一处，另一条路就会带上旧参数。
+          DTS_FILE="$(ls ../dts/*.dts 2>/dev/null | grep -v '\.orig\.' | head -1)"
+          if [ -n "$DTS_FILE" ]; then
+            DTS_BA="$(grep -oE 'bootargs = "[^"]*"' "$DTS_FILE" | head -1 | sed 's/^bootargs = "//; s/"$//')"
+            if [ -z "$DTS_BA" ]; then
+              echo "::warning::$DTS_FILE 里没找到 chosen/bootargs，无法比对一致性"
+            elif [ "$DTS_BA" != "$CMDLINE_ARGS" ]; then
+              echo "::warning::设备树 bootargs 与内核内置命令行不一致 —— 两处都改才保证两条路都正确"
+              echo "     设备树：$DTS_BA"
+              echo "     内核  ：$CMDLINE_ARGS"
+            else
+              echo "OK   设备树 bootargs 与内核内置命令行逐字一致（$(printf '%s' "$DTS_BA" | wc -c) 字节）"
+            fi
           fi
 
           echo "=== 单板配置层逐行自检（未生效的逐条列出）==="
@@ -539,6 +595,24 @@ jobs:
           echo "窗口占用        ：$((DTB_SZ * 100 / 16384))%（剩余 $((16384 - DTB_SZ)) 字节余量）"
           echo "参照：作者那版 dtbo 里的 dtb 是 9156 字节"
           echo "节点数（按 dts 源统计）：$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_@,.-]*[[:space:]]*\{' "$BOARD_DTS")"
+          # 内存节点：必须与真机实测一致。
+          # 作者那版 dtb 的 memory 写的是 2GiB(0x80000000)，而本机 U-Boot 打印的是
+          #   DRAM: 1 GiB  /  DDR Size: 1 GiB (Boot: 1 GiB)
+          # eMMC 也只有 7456M(约 7.3GB) 而非标称 32GB —— 不是作者那台 2+32G。
+          # 声明过大的后果很隐蔽：内核在 free_area_init 阶段遍历并标记这些并不存在
+          # 的物理页，此时 console 尚未建立，表现为串口一个字都没有、也没有报错。
+          MEM_REG="$(grep -oE '0x00 0x00 0x00 0x[0-9a-f]+' "$BOARD_DTS" | head -1)"
+          if [ -z "$MEM_REG" ]; then
+            echo "::warning::设备树里没找到 (0x00 0x00 0x00 0x…) 形式的 memory reg，请人工确认内存节点"
+          else
+            MEMSZ=$(( 0x${MEM_REG##*0x} ))
+            echo "memory 节点     ：$MEM_REG（$((MEMSZ / 1024 / 1024)) MiB）"
+            if [ "$MEMSZ" -gt 1073741824 ]; then
+              echo "::error::设备树声明的内存 $((MEMSZ/1024/1024)) MiB 超过本机实测的 1024 MiB"
+              echo "::error::内核会遍历 0x40000000 以上不存在的物理页，在 early console 建立之前挂住，串口完全无声"
+              exit 1
+            fi
+          fi
 
       - name: 追加设备树并打包 uImage
         run: |
@@ -669,15 +743,6 @@ jobs:
           echo "内核 release: $KREL"
           echo "=== 产物列表 ==="
           ls -lh
-
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: gk6323v100c-linux-${{ env.PATCHES_KERNEL_VERSION }}
-          if-no-files-found: error
-          retention-days: 90
-          path: linux_build/out/*
-
       - name: 生成发布说明并校验产物
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

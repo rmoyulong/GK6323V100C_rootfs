@@ -156,6 +156,12 @@ sudo bash scripts/flash-boot.sh -i boot.img -m modules.tar.gz \
      -d gk6323v100c-chaoge-z71a.dtb         # 确认无误后真正执行
 ```
 
+> **只刷 `p15` 不够**：本机 `bootcmd` 是 `bootm 0x04000000`，**没有第三个 fdt 参数**，
+> 内核用的设备树很可能取自 dtbo 分区（`p10`），所以 `p10` 要一并写。
+> 若串口仍然全静，按 `docs/troubleshooting.md` 第 1 条那组命令，在 U-Boot 里用
+> `bootm 0x04000000 - 0x03FFC000` 显式传一次设备树做对照 —— 那是**临时输入、
+> 不写环境变量**，断电即失效，不污染原厂参数。
+
 ---
 
 ## 六、验证
@@ -164,7 +170,8 @@ sudo bash scripts/flash-boot.sh -i boot.img -m modules.tar.gz \
 
 | 现象 | 说明 | 下一步 |
 | --- | --- | --- |
-| 一个字都没有 | DTB 或 GIC 初始化卡住 | 确认 dtbo 分区写的是新 dtb |
+| 一个字都没有，且**不复位** | 内核没拿到有效 fdt（首位嫌疑），或内存节点与实际不符 | 见 `docs/troubleshooting.md` 第 1 条：先在 U-Boot 里 `bdinfo` / `fdt print /memory` / `fdt print /chosen`，再试 `bootm 0x04000000 - 0x03FFC000` 显式传设备树 |
+| 红灯循环、TTL 里全是 U-Boot | 镜像超过 `CONFIG_SYS_BOOTM_LEN` | 看本文第八节第一条 |
 | 出 `Booting Linux` + earlycon 后停住 | 时钟或 eMMC 未就绪 | 看 troubleshooting「启动阶段」第 2 条 |
 | 打印出 mmcblk0 分区表 | eMMC 通了 | 看根文件系统能否挂载 |
 | 进到 shell | 第一阶段完成 | 插 USB 声卡，`cat /proc/asound/cards` |
@@ -237,3 +244,19 @@ sudo dd if=/root/boot.bak of=/dev/mmcblk0p15 bs=1M conv=fsync && sync && reboot
   都在，但补丁库 rc3 版已移除 Festa PHY 驱动，`HISI_FESTA_PHY` 符号在内核树里
   不存在。若这台机的 EPHY 正是 Festa 系列，网口可能拿不到 link —— 网口是第二
   阶段的事，等驱动回到补丁库再补，流水线的「已移除符号报告」一节会盯住它。
+- **内核内置命令行是强制的（`CONFIG_CMDLINE_FORCE=y`，2026-11-19 起）**：
+  arm64 的 `arch/arm64/Kconfig` 里只有 `CMDLINE_FROM_BOOTLOADER` 与
+  `CMDLINE_FORCE` 两选一，**没有** `CMDLINE_EXTEND`（那是 arm32 的东西），
+  所以"保留引导器参数、再追加 earlycon"这条路在 arm64 上不存在。本版把
+  `earlycon=pl011,mmio32,0xf8b00000,115200n8` 在内的整串参数放进
+  `CONFIG_CMDLINE` 并强制启用，为的是让"串口看不见内核输出"不再发生。
+  代价一条：**单刷 dtbo 分区换 rootfs 的玩法会失效**（`root=` 由内核定死）。
+  进系统后想恢复该玩法，删掉功能层那两行（`CONFIG_CMDLINE=...` 与
+  `CONFIG_CMDLINE_FORCE=y`）、以及裁剪层里对应的
+  `# CONFIG_CMDLINE_FROM_BOOTLOADER is not set` 即可。
+- **内存是 2GiB，别信 U-Boot 那句 1 GiB**：本机 U-Boot 打印
+  `DRAM: 1 GiB` / `DDR Size: 1 GiB (Boot: 1 GiB)`，那是它自己的可映射上限，
+  不是硬件容量。真机导出设备树的 `memory@0 = 0x80000000` 与真机
+  `/proc/meminfo` 的 `MemTotal: 2018984 kB` 才作数（两者吻合）。
+  这个值写错方向都会出事：写小了白白少认一半内存，写大了内核会遍历并不存在的
+  物理页、在 console 建立之前挂住。流水线已对它做硬校验。
