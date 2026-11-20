@@ -399,9 +399,10 @@ jobs:
           mkdir -p "$WORK/rootfs"
           tar -xzf "$TARBALL" -C "$WORK/rootfs" --exclude='./dev/*'
 
+          #已经启动自动扩容，所以image只用扩大150MB
           USED_KB="$(du -sk "$WORK/rootfs" | awk '{print $1}')"
           USED_BYTES=$((USED_KB * 1024))
-          EXTRA_BYTES=$((500 * 1024 * 1024))
+          EXTRA_BYTES=$((150 * 1024 * 1024))
           TOTAL_BYTES=$((USED_BYTES + EXTRA_BYTES))
 
           MiB=$((1024 * 1024))
