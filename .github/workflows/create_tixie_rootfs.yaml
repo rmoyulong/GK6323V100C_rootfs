@@ -335,9 +335,9 @@ jobs:
           sudo tar zxvfp "./golang/plugins.tar.gz" -C "$ROOTFS_DIR"
           rm -rf ./golang
           
-          # ---------- 5) 添加hataketsu_GK6323V100C生成物-模块 ----------
+          # ---------- 5) 添加GK6323V100C生成物-模块 ----------
           sudo mkdir -p "$ROOTFS_DIR/usr/lib/modules"
-          wget https://github.com/rmoyulong/hataketsu_GK6323V100C/releases/download/gk6323v100c-latest/modules.tar.gz -O modules.tar.gz
+          wget https://github.com/rmoyulong/GK6323V100C/releases/download/gk6323v100c-latest/modules.tar.gz -O modules.tar.gz
           sudo tar zxvfp "./modules.tar.gz" -C "$ROOTFS_DIR/usr"
           rm modules.tar.gz
           
