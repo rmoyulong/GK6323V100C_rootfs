@@ -109,10 +109,9 @@ jobs:
       - name: 校验必要文件存在
         run: |
           set -euo pipefail
-          for f in apply_histb_patches.sh "$FRAGMENT" slim.config "$BOARD_DTS" dts/check-dts.py patches/900-01-clk-add-gk6323v100c-crg-driver.patch; do
+          for f in apply_histb_patches.sh "$FRAGMENT" slim.config "$BOARD_DTS" dts/check-dts.py; do
             [ -f "$f" ] || { echo "::error::根目录缺少 $f"; exit 1; }
           done
-          [ -d patches ] || { echo "::error::根目录缺少 patches/ 目录"; exit 1; }
           chmod +x apply_histb_patches.sh
           ls -lh apply_histb_patches.sh "$FRAGMENT" slim.config "$BOARD_DTS" dts/check-dts.py
           ls -lh patches/ 2>/dev/null || echo "（仓库根目录无 patches/，首次运行时请新建）"
@@ -220,19 +219,19 @@ jobs:
           fi
           echo "版本校验通过：$ACT"
 
-      - name: 注入 GK6323 CRG 最小驱动补丁（900-01）
-        if: ${{ env.START_DIY_PATCH == true }}
+      - name: 应用 histb 补丁（调用仓库根目录 apply_histb_patches.sh）
         run: |
           set -euo pipefail
-          # 把本仓库 patches/ 下的 9xx 高序号补丁拷到 histb-patches，
-          # apply_histb_patches.sh 会按文件名序号应用；900 系列在所有海思补丁之后，
-          # 这样对 drivers/clk/hisilicon/{Kconfig,Makefile} 的追加不会被后续补丁覆盖。
-          cp -v patches/900-*.patch histb-patches/
-          ls histb-patches/900-*.patch
-          echo "--- 900 补丁文件大小 ---"
-          wc -l histb-patches/900-*.patch
-          
-      - name: 直接写入GK6323 CRG时钟复位驱动到内核树（无需补丁，零冲突）
+          cd linux_build
+          # 该脚本自判：有 series 按 series，没有则按文件名序号应用全部 *.patch；
+          # 等价于 quilt --fuzz=0，遇冲突即中止并回滚，不会静默产出缺补丁的内核
+          #PATCHES_DIR="../histb-patches" CI=true bash ../apply_histb_patches.sh -y
+          #我们自己的CRG驱动独立工作，不依赖任何海思原厂PLL补丁
+          PATCHES_DIR="../histb-patches" CI=true SKIP_ON_CONFLICT=1 bash ../apply_histb_patches.sh -y
+          echo "=== 补丁后确认 ===（本仓库设备树自带，不再要求补丁库含 mv200h 板级 dts）"
+          ls arch/arm64/boot/dts/hisilicon/ | head -20 || true
+
+      - name: 写入 GK6323V100C CRG 驱动源码到内核树（零补丁，排在海思补丁之后）
         run: |
             set -euo pipefail
             cd linux_build/drivers/clk/hisilicon
@@ -276,14 +275,15 @@ jobs:
             #include <linux/bitops.h>
             #include <linux/delay.h>
             #include <linux/spinlock.h>
-            #include "clk.h"
             #include "gk6323v100c-resets.h"
 
             static DEFINE_SPINLOCK(gk_crg_lock);
             struct gk_crg_priv {
                 void __iomem *base;
-                struct clk_hw_onecell_data clk_data;
                 struct reset_controller_dev rcdev;
+                /* clk_data 内含柔性数组 hws[]，必须放在结构体最后：
+                 * 否则 hws[i] 的写入会越过它去踩紧随其后的 rcdev。 */
+                struct clk_hw_onecell_data clk_data;
             };
 
             /* 外设时钟门控表：(偏移, 位号, 名称)，写1=开时钟，写0=关时钟 */
@@ -378,6 +378,11 @@ jobs:
                 int i, ret;
                 u32 val;
 
+                /* 进入 probe 第一句就打印：刷机后 dmesg 里若连这句都没有，说明驱动
+                 * 压根没被 probe（多半是 dts 的 compatible 或节点没对上），而不是
+                 * 内部逻辑失败 —— 一步就能定位方向。 */
+                dev_info(dev, "GK6323V100C CRG: probe entered (goke,gk6323v100c-cru)\n");
+
                 base = devm_platform_ioremap_resource(pdev, 0);
                 if (IS_ERR(base))
                     return PTR_ERR(base);
@@ -420,7 +425,11 @@ jobs:
                 }
                 priv->clk_data.num = ARRAY_SIZE(gk_gates);
                 ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, &priv->clk_data);
-                if (ret) return ret;
+                if (ret)
+                    /* 只告警、不中止：时钟门在更早的循环里已直接写寄存器打开，没有
+                     * 消费者按 clk 名字查这些门；在这里中断会连复位控制器一起丢掉，
+                     * 而复位控制器才是 dts 真正引用的东西（resets = <&cru ...>）。 */
+                    dev_warn(dev, "GK6323V100C CRG: clk provider 注册失败(%d)，门控已直接打开，继续注册复位控制器\n", ret);
 
                 /* 4. 注册复位控制器 */
                 priv->rcdev.ops = &gk_crg_reset_ops;
@@ -462,34 +471,14 @@ jobs:
             MODULE_LICENSE("GPL");
             CEOF
 
-            # 追加Kconfig配置
-            cat >> Kconfig << 'EOF'
-            config COMMON_CLK_GK6323V100C
-                bool "Goke GK6323V100C CRG clock and reset driver"
-                depends on ARCH_HISTB || COMPILE_TEST
-                default ARCH_HISTB
-                help
-                  Enable the CRG clock and reset controller driver for Goke GK6323V100C SoCs.
-                  This handles peripheral clock gates and reset lines required for eMMC,
-                  USB, Ethernet, audio and other on-chip peripherals.
-            EOF
-
-            # 追加Makefile配置
-            echo 'obj-$(CONFIG_COMMON_CLK_GK6323V100C) += crg-gk6323v100c.o' >> Makefile
-            echo "OK  GK6323V100C CRG驱动已直接写入内核树，无补丁冲突"
-
-      - name: 应用 histb 补丁（调用仓库根目录 apply_histb_patches.sh）
-        run: |
-          set -euo pipefail
-          cd linux_build
-          # 该脚本自判：有 series 按 series，没有则按文件名序号应用全部 *.patch；
-          # 等价于 quilt --fuzz=0，遇冲突即中止并回滚，不会静默产出缺补丁的内核
-          #PATCHES_DIR="../histb-patches" CI=true bash ../apply_histb_patches.sh -y
-          #我们自己的CRG驱动独立工作，不依赖任何海思原厂PLL补丁
-          PATCHES_DIR="../histb-patches" CI=true SKIP_ON_CONFLICT=1 bash ../apply_histb_patches.sh -y
-          echo "=== 补丁后确认 ===（本仓库设备树自带，不再要求补丁库含 mv200h 板级 dts）"
-          ls arch/arm64/boot/dts/hisilicon/ | head -20 || true
-
+            # ★ 本步骤只负责把两个源文件放进内核树；Kconfig / Makefile 的登记
+            #   交给紧随其后的「追加 … （幂等）」步骤，避免同一步里既写文件又改配置。
+            #   硬校验：源文件必须真的落盘，否则后面 Makefile 里的 obj- 目标会让
+            #   make 直接报 No rule to make target 'crg-gk6323v100c.o'。
+            test -f crg-gk6323v100c.c    || { echo "::error::crg-gk6323v100c.c 未写入内核树"; exit 1; }
+            test -f gk6323v100c-resets.h || { echo "::error::gk6323v100c-resets.h 未写入内核树"; exit 1; }
+            ls -l crg-gk6323v100c.c gk6323v100c-resets.h
+            echo "OK  GK6323V100C CRG 驱动源码已写入内核树（两文件均已确认存在）"
       - name: 追加 GK6323 CRG 驱动到 Kconfig / Makefile（幂等）
         run: |
           set -euo pipefail
@@ -673,6 +662,10 @@ jobs:
           #使用自己的补丁CLK_GK6323V100C
           #scripts/config --enable COMMON_CLK_HI3798MV200
           scripts/config --enable COMMON_CLK_GK6323V100C
+          # ★ 必须显式关掉：300-01 PLL 补丁已被 SKIP_ON_CONFLICT 跳过，
+          #   COMMON_CLK_HI3798MV200 缺 hisi_clk_register_pll 必然编不过；
+          #   本板用的是自己的 GK6323 CRG 驱动，不需要它。
+          scripts/config --disable COMMON_CLK_HI3798MV200
           scripts/config --enable RESET_CONTROLLER
           scripts/config --enable RESET_HISI
           # 中断控制器 / 定时器（真机是 GICv3 + A55，不是 GIC-400 + A53）
@@ -996,6 +989,16 @@ jobs:
           make -j"$(nproc)" ARCH="$ARCH" CROSS_COMPILE="ccache $CROSS_COMPILE" Image
           make -j"$(nproc)" ARCH="$ARCH" CROSS_COMPILE="ccache $CROSS_COMPILE" modules
           ccache -s
+
+          # ===== CRG 驱动落地硬断言：配置、源文件、目标文件三者必须都在 =====
+          OBJ=drivers/clk/hisilicon/crg-gk6323v100c.o
+          grep -q '^CONFIG_COMMON_CLK_GK6323V100C=y' .config \
+            || { echo "::error::CONFIG_COMMON_CLK_GK6323V100C 未生效"; exit 1; }
+          test -f "$OBJ" \
+            || { echo "::error::$OBJ 未生成 —— Kconfig/Makefile 追加没被 kconfig 采纳"; exit 1; }
+          grep -q 'crg-gk6323v100c' drivers/clk/hisilicon/built-in.a \
+            || { echo "::error::crg-gk6323v100c 未链接进 built-in.a"; exit 1; }
+          echo "OK  CRG 驱动已编入内核：$OBJ 与 built-in.a 均已确认"
 
       - name: 编译仓库自带的 GK6323V100C 设备树
         run: |
