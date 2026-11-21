@@ -1,0 +1,102 @@
+name: 构建北京联通Q5 Armbian S905 GXL(792MHz DDR3)TF/SD卡启动镜像
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 's905_p281'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git build-essential gcc-aarch64-linux-gnu             bison flex libssl-dev device-tree-compiler python3             bc swig python3-dev python3-setuptools libgnutls28-dev             curl jq parted util-linux gzip
+
+      - name: Clone U-Boot and FIP signing repositories
+        run: |
+          git clone --depth 1 https://github.com/hexdump0815/u-boot-misc.git
+          git clone --depth 1 https://github.com/LibreELEC/amlogic-boot-fip.git
+          git clone --depth 1 -b v2024.01 https://source.denx.de/u-boot/u-boot.git
+
+      - name: Compile Mainline U-Boot for GXL (p281 / p212)
+        working-directory: u-boot
+        run: |
+          make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- p281_defconfig
+          make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+
+      - name: Package and Sign U-Boot with 792MHz DDR3 FIP (p281)
+        working-directory: amlogic-boot-fip
+        run: |
+          mkdir -p ../fip_output
+          ./build-fip.sh p281 ../u-boot/u-boot.bin ../fip_output
+          ls -la ../fip_output/
+
+      - name: Download Base Armbian S905X Image and Inject U-Boot
+        run: |
+          set -e
+          RELEASE_JSON=$(curl -s https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest)
+          IMG_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905x_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
+          if [ -z "$IMG_URL" ]; then
+            echo "Error: Could not find S905X Armbian image URL"
+            exit 1
+          fi
+          echo "Downloading: $IMG_URL"
+          curl -L -o base_armbian.img.gz "$IMG_URL"
+          gunzip -c base_armbian.img.gz > armbian_s905_p212.img
+
+          # Inject 792MHz GXL U-Boot into the image preserving MBR partition table
+          dd if=fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc bs=1 count=442
+          dd if=fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc bs=512 skip=1 seek=1
+
+          # Mount boot partition and configure DTB to meson-gxl-s905x-p212.dtb
+          LOOP_DEV=$(sudo losetup -fP --show armbian_s905_p212.img)
+          sudo mkdir -p /mnt/armbian_boot
+          sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
+
+          if [ -f /mnt/armbian_boot/uEnv.txt ]; then
+            sudo sed -i 's|^FDT=.*|FDT=/dtb/amlogic/meson-gxl-s905x-p212.dtb|g' /mnt/armbian_boot/uEnv.txt
+          fi
+          if [ -f /mnt/armbian_boot/extlinux/extlinux.conf ]; then
+            sudo sed -i 's|FDT .*|FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb|g' /mnt/armbian_boot/extlinux/extlinux.conf
+          fi
+
+          sudo sync
+          sudo umount /mnt/armbian_boot
+          sudo losetup -d "$LOOP_DEV"
+
+          BUILD_DATE=$(date +%Y.%m.%d)
+          OUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
+          gzip -c armbian_s905_p212.img > "$OUT_NAME"
+          echo "OUT_IMAGE=$OUT_NAME" >> $GITHUB_ENV
+
+      - name: Publish Release to s905_p281 tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: s905_p281
+          name: "Armbian S905 GXL (792MHz DDR3 / P212) Build-北京联通Q5"
+          body: |
+            ### 刷写到 TF 卡步骤（以 `/dev/sda` 为例，请务必核对设备名）
+
+            ```bash
+            # 1. 先将 Armbian 镜像写入 TF 卡
+            zcat Armbian_xx_s905_xx.img.gz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
+
+            # 2. 写入自制主线 U-Boot（必须跳过前 512 字节以保留 MBR 分区表）
+            sudo dd if=u-boot.bin.sd.bin of=/dev/sdX conv=fsync bs=1 count=442
+            sudo dd if=u-boot.bin.sd.bin of=/dev/sdX conv=fsync bs=512 skip=1 seek=1
+
+            # 3. 同步缓存并安全弹出
+            sync
+            ```
+          files: |
+            ${{ env.OUT_IMAGE }}
+            fip_output/u-boot.bin.sd.bin
