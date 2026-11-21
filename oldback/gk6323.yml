@@ -773,6 +773,12 @@ jobs:
           #   scripts/config 对含空格/逗号/括号的字符串转义行为并不一致。
 
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          
+          # 强制禁用无关的Hi3798MV200 CRG驱动（依赖缺失PLL补丁会编译失败，我们不需要它）
+          sed -i 's/^CONFIG_COMMON_CLK_HI3798MV200=.*$/# CONFIG_COMMON_CLK_HI3798MV200 is not set/' .config
+          # 强制确保我们自己的GK6323 CRG驱动开启
+          echo "CONFIG_COMMON_CLK_GK6323V100C=y" >> .config
+          
 
           echo "=== 必须项：少一项这台机器就起不来或目标落空，直接中止 ==="
           # ★ 这份清单必须与当前内核树里**真实存在**的符号一致。2026-11-20 那次
