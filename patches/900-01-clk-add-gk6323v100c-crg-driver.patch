@@ -1,52 +1,19 @@
-From: GK6323 Mainline Port <mainline@local>
-Date: Sat, 21 Nov 2026 07:30:00 +0000
-Subject: [PATCH] clk: hisilicon: add GK6323V100C CRG clock/reset driver
+From 7dc6fa0b759b7fbe6f4996fb3edea06f6020da43 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Sat, 21 Nov 2026 21:25:00 +0800
+Subject: [PATCH] clk: hisilicon: add GK6323V100C CRG clock and reset driver
 
-Minimal clock gate + reset controller for GK6323V100C (ChaoGe Z71A)
-SoC, enabling eMMC, USB 2.0, FEMAC ethernet, I2C and audio AIAO
-peripherals. Compatible with hi3798mv200 CRG register layout.
-
-Signed-off-by: GK6323 Mainline Port <mainline@local>
 ---
- drivers/clk/hisilicon/Kconfig                   |  10 +
- drivers/clk/hisilicon/Makefile                  |   1 +
- drivers/clk/hisilicon/crg-gk6323v100c.c         | 267 ++++++++++++++++++++++++
- 3 files changed, 278 insertions(+)
+ drivers/clk/hisilicon/crg-gk6323v100c.c | 234 ++++++++++++++++++++++++
+ 1 file changed, 234 insertions(+)
  create mode 100644 drivers/clk/hisilicon/crg-gk6323v100c.c
 
-diff --git a/drivers/clk/hisilicon/Kconfig b/drivers/clk/hisilicon/Kconfig
-index 1111111..2222222 100644
---- a/drivers/clk/hisilicon/Kconfig
-+++ b/drivers/clk/hisilicon/Kconfig
-@@ -100,3 +100,13 @@ config COMMON_CLK_HI3798MV200
- 	  This driver supports Hisilicon Hi3798MV200 SoC CRG clock
- 	  controller.
- 
-+config COMMON_CLK_GK6323V100C
-+	bool "Goke GK6323V100C CRG driver"
-+	depends on ARCH_HISI || COMPILE_TEST
-+	default ARCH_GK6323
-+	help
-+	  Build the Clock and Reset driver for Goke GK6323V100C SoC CRG
-+	  controller. This enables clock gates and reset lines for
-+	  eMMC, USB, Ethernet, I2C and audio peripherals.
-+
- endmenu
-diff --git a/drivers/clk/hisilicon/Makefile b/drivers/clk/hisilicon/Makefile
-index 3333333..4444444 100644
---- a/drivers/clk/hisilicon/Makefile
-+++ b/drivers/clk/hisilicon/Makefile
-@@ -14,3 +14,4 @@ obj-$(CONFIG_COMMON_CLK_HI3516CV300)	+= clk-hi3516cv300.o
- obj-$(CONFIG_COMMON_CLK_HI3798CV200)	+= clk-hi3798cv200.o gate.o
- obj-$(CONFIG_COMMON_CLK_HI3798MV100)	+= clk-hi3798mv100.o gate.o
- obj-$(CONFIG_COMMON_CLK_HI3798MV200)	+= clk-hi3798mv200.o gate.o
-+obj-$(CONFIG_COMMON_CLK_GK6323V100C)	+= crg-gk6323v100c.o
 diff --git a/drivers/clk/hisilicon/crg-gk6323v100c.c b/drivers/clk/hisilicon/crg-gk6323v100c.c
 new file mode 100644
-index 0000000..5555555
+index 0000000..3cc8e6b
 --- /dev/null
 +++ b/drivers/clk/hisilicon/crg-gk6323v100c.c
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,234 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * GK6323V100C CRG Clock & Reset Driver
@@ -61,6 +28,7 @@ index 0000000..5555555
 +#include <linux/reset-controller.h>
 +#include <linux/bitops.h>
 +#include <linux/io.h>
++#include <linux/delay.h>
 +#include <linux/spinlock.h>
 +
 +#define GK_CRG_MAX_GATES	16
@@ -280,3 +248,6 @@ index 0000000..5555555
 +MODULE_LICENSE("GPL v2");
 +MODULE_AUTHOR("GK6323 Mainline Port");
 +MODULE_DESCRIPTION("GK6323V100C CRG Clock and Reset Driver");
+-- 
+2.34.1
+
