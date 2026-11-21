@@ -3,8 +3,8 @@ name: Build Armbian S905 P201 Image
 on:
   workflow_dispatch:
   push:
-    paths:
-      - '.github/workflows/creat_s905.yaml'
+    tags:
+      - 's905_p201'
 
 permissions:
   contents: write
@@ -12,6 +12,7 @@ permissions:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,7 +20,10 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git build-essential gcc-aarch64-linux-gnu bison flex libssl-dev device-tree-compiler python3 parted curl jq
+          sudo apt-get install -y \
+            git build-essential gcc-aarch64-linux-gnu \
+            bison flex libssl-dev device-tree-compiler \
+            python3 xxd parted dosfstools curl jq p7zip-full xz-utils
 
       - name: Clone U-Boot and FIP repositories
         run: |
@@ -27,76 +31,74 @@ jobs:
           git clone --depth 1 https://github.com/LibreELEC/amlogic-boot-fip.git
           git clone --depth 1 -b v2024.01 https://source.denx.de/u-boot/u-boot.git
 
-      - name: Build and sign mainline U-Boot (P201 / GXBB)
+      - name: Compile Mainline U-Boot for P201 (GXBB)
         run: |
           cd u-boot
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- p201_defconfig
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
-          cd ..
 
-          mkdir -p fip_build
-          FIP_DIR="amlogic-boot-fip/p201"
-          cp $FIP_DIR/bl2.bin $FIP_DIR/acs.bin $FIP_DIR/bl21.bin $FIP_DIR/bl30.bin $FIP_DIR/bl301.bin $FIP_DIR/bl31.img u-boot/u-boot.bin fip_build/
-          cd fip_build
-
-          ../amlogic-boot-fip/p201/blx_fix.sh bl30.bin zero_tmp bl30_zero.bin bl301.bin bl301_zero.bin bl30_new.bin bl30
-          python3 ../amlogic-boot-fip/p201/acs_tool.pyc bl2.bin bl2_acs.bin acs.bin 0
-          ../amlogic-boot-fip/p201/blx_fix.sh bl2_acs.bin zero_tmp bl2_zero.bin bl21.bin bl21_zero.bin bl2_new.bin bl2
-
-          ../amlogic-boot-fip/p201/aml_encrypt_gxb --bl3enc --input bl30_new.bin
-          ../amlogic-boot-fip/p201/aml_encrypt_gxb --bl3enc --input bl31.img
-          ../amlogic-boot-fip/p201/aml_encrypt_gxb --bl3enc --input u-boot.bin
-          ../amlogic-boot-fip/p201/aml_encrypt_gxb --bootmk --output u-boot.bin.encrypt \
-            --bl2 bl2_new.bin --bl30 bl30_new.bin.enc --bl31 bl31.img.enc --bl33 u-boot.bin.enc
-
-          dd if=u-boot.bin.encrypt of=u-boot.bin.sd.bin bs=512 skip=96
-          cp u-boot.bin.sd.bin ../u-boot.bin.sd.bin
-          cd ..
-
-      - name: Download Armbian S905 base image and inject U-Boot
+      - name: Package and Sign U-Boot FIP via build-fip.sh
         run: |
-          mkdir -p work && cd work
-          IMG_URL=$(curl -s https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("amlogic_s905_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
-          echo "Downloading: $IMG_URL"
-          curl -L -o base.img.gz "$IMG_URL"
-          gunzip base.img.gz
+          mkdir -p fip_output
+          cd amlogic-boot-fip
+          ./build-fip.sh p201 ../u-boot/u-boot.bin ../fip_output
+          ls -lh ../fip_output/
 
-          # Inject custom mainline U-Boot while preserving MBR partition table
-          dd if=../u-boot.bin.sd.bin of=base.img conv=notrunc,fsync bs=1 count=442
-          dd if=../u-boot.bin.sd.bin of=base.img conv=notrunc,fsync bs=512 skip=1 seek=1
+      - name: Download Latest S905 Armbian Image & Inject Mainline U-Boot
+        run: |
+          mkdir -p work_img
+          cd work_img
 
-          # Mount boot partition and set DTB to meson-gxbb-p201.dtb
-          LOOP_DEV=$(sudo losetup --find --show --partscan base.img)
+          # 获取 ophub/amlogic-s9xxx-armbian 最新发布的 s905 镜像链接
+          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest \
+            | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905_.*\\.img\\.gz$")) | .browser_download_url' \
+            | head -n 1)
+
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "Failed to find S905 Armbian image URL"
+            exit 1
+          fi
+
+          echo "Downloading: $DOWNLOAD_URL"
+          curl -L -o base_armbian.img.gz "$DOWNLOAD_URL"
+          gunzip base_armbian.img.gz
+
+          # 写入自制主线 U-Boot（保留前 442 字节 MBR 引导代码与分区表）
+          dd if=../fip_output/u-boot.bin.sd.bin of=base_armbian.img conv=fsync,notrunc bs=1 count=442
+          dd if=../fip_output/u-boot.bin.sd.bin of=base_armbian.img conv=fsync,notrunc bs=512 skip=1 seek=1
+
+          # 挂载 BOOT 分区并将默认设备树修改为 meson-gxbb-p201.dtb
+          LOOP_DEV=$(sudo losetup --show -fP base_armbian.img)
           mkdir -p mnt_boot
           sudo mount "${LOOP_DEV}p1" mnt_boot
 
           if [ -f mnt_boot/uEnv.txt ]; then
-            sudo sed -i 's|FDT=.*|FDT=/dtb/amlogic/meson-gxbb-p201.dtb|g' mnt_boot/uEnv.txt
+            sudo sed -i 's|FDT=/dtb/amlogic/.*\.dtb|FDT=/dtb/amlogic/meson-gxbb-p201.dtb|g' mnt_boot/uEnv.txt
           fi
           if [ -f mnt_boot/extlinux/extlinux.conf ]; then
-            sudo sed -i 's|FDT .*|FDT /dtb/amlogic/meson-gxbb-p201.dtb|g' mnt_boot/extlinux/extlinux.conf
+            sudo sed -i 's|FDT /dtb/amlogic/.*\.dtb|FDT /dtb/amlogic/meson-gxbb-p201.dtb|g' mnt_boot/extlinux/extlinux.conf
           fi
 
+          sync
           sudo umount mnt_boot
           sudo losetup -d "$LOOP_DEV"
 
+          # 重新命名并压缩为目标产物
           BUILD_DATE=$(date +%Y.%m.%d)
           OUT_NAME="Armbian_${BUILD_DATE}_s905_p201.img"
-          mv base.img "$OUT_NAME"
+          mv base_armbian.img "$OUT_NAME"
           gzip -9 "$OUT_NAME"
           mv "${OUT_NAME}.gz" ../
-          cd ..
 
       - name: Publish Release to s905_p201 tag
         uses: softprops/action-gh-release@v2
         with:
           tag_name: s905_p201
-          name: Armbian S905 P201 Mainline U-Boot Build
+          name: "Armbian S905 P201 Mainline U-Boot Build"
           body: |
-            Automated build of Armbian for Amlogic S905/S905M (GXBB P201, 1GB RAM) with mainline U-Boot and `meson-gxbb-p201.dtb`.
+            自动构建的 Amlogic S905 / S905M (GXBB P201) 主线 U-Boot 固件与 Armbian 镜像。
 
-            ### 刷写指南（Linux 终端示例，请将 `/dev/sdX` 替换为你的 TF 卡设备名）
-
+            ### TF 卡刷写说明
             ```bash
             # 1. 先将 Armbian 镜像写入 TF 卡
             zcat Armbian_xx_s905_xx.img.gz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
@@ -110,4 +112,4 @@ jobs:
             ```
           files: |
             Armbian_*_s905_p201.img.gz
-            u-boot.bin.sd.bin
+            fip_output/u-boot.bin.sd.bin
