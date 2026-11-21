@@ -274,9 +274,12 @@ jobs:
             #include <linux/clk-provider.h>
             #include <linux/reset-controller.h>
             #include <linux/bitops.h>
+            #include <linux/delay.h>
+            #include <linux/spinlock.h>
             #include "clk.h"
             #include "gk6323v100c-resets.h"
 
+            static DEFINE_SPINLOCK(gk_crg_lock);
             struct gk_crg_priv {
                 void __iomem *base;
                 struct clk_hw_onecell_data clk_data;
@@ -398,19 +401,19 @@ jobs:
                     val |= BIT(gk_resets[i].bit);
                     writel_relaxed(val, base + gk_resets[i].off);
                 }
-                udelay(10000); /* 按住10ms，满足所有外设复位脉宽要求 */
+                msleep(10); /* 按住10ms，满足所有外设复位脉宽要求 */
                 for (i = 0; i < ARRAY_SIZE(gk_resets); i++) {
                     val = readl_relaxed(base + gk_resets[i].off);
                     val &= ~BIT(gk_resets[i].bit);
                     writel_relaxed(val, base + gk_resets[i].off);
                 }
-                udelay(50000); /* 释放后等待50ms，等待外设PLL锁定 */
+                msleep(50); /* 释放后等待50ms，等待外设PLL锁定 */
 
                 /* 3. 注册时钟provider */
                 for (i = 0; i < ARRAY_SIZE(gk_gates); i++) {
                     priv->clk_data.hws[i] = clk_hw_register_gate(dev, gk_gates[i].name,
                         NULL, CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
-                        base + gk_gates[i].off, gk_gates[i].bit, 0, &clk_lock);
+                        base + gk_gates[i].off, gk_gates[i].bit, 0, &gk_crg_lock);
                     if (IS_ERR(priv->clk_data.hws[i]))
                         return dev_err_probe(dev, PTR_ERR(priv->clk_data.hws[i]),
                                             "failed to register gate %s\n", gk_gates[i].name);
