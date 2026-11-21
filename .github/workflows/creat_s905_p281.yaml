@@ -12,6 +12,7 @@ permissions:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,7 +20,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git build-essential gcc-aarch64-linux-gnu bison flex             libssl-dev device-tree-compiler python3 python3-setuptools swig             libgnutls28-dev uuid-dev jq curl parted kmod u-boot-tools xxd
+          sudo apt-get install -y git build-essential gcc-aarch64-linux-gnu bison flex libssl-dev device-tree-compiler python3 python3-pyelftools bc swig libncurses-dev curl jq parted kpartx gzip
 
       - name: Clone U-Boot and FIP repositories
         run: |
@@ -27,60 +28,58 @@ jobs:
           git clone --depth 1 https://github.com/LibreELEC/amlogic-boot-fip.git
           git clone --depth 1 -b v2024.01 https://source.denx.de/u-boot/u-boot.git
 
-      - name: Build Mainline U-Boot (JetHub J80 / GXL S905W)
+      - name: Build Mainline U-Boot (jethub_j80 / GXL 792MHz DDR3)
         run: |
           cd u-boot
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- jethub_j80_defconfig
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 
-      - name: Sign and Package FIP for S905W / GXL 792MHz DDR3 (jethub-j80)
+      - name: Package and Sign FIP (u-boot.bin.sd.bin)
         run: |
           mkdir -p fip_output
           cd amlogic-boot-fip
           ./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
-          ls -lh ../fip_output/
+          ls -lh ../fip_output
 
-      - name: Download Latest Armbian S905X Base Image & Inject U-Boot
+      - name: Download Base Armbian S905X Image and Inject U-Boot
         run: |
           set -e
-          BUILD_DATE=$(date +%Y.%m.%d)
-          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
-
-          IMG_URL=$(curl -s https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest |             jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905x_.*\.img\.gz$")) | .browser_download_url' | head -n 1)
-
-          if [ -z "$IMG_URL" ] || [ "$IMG_URL" = "null" ]; then
+          mkdir -p work
+          cd work
+          RELEASE_JSON=$(curl -s https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest)
+          IMG_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | (startswith("Armbian_") and contains("_amlogic_s95x_") and endswith(".img.gz"))) | .browser_download_url' | head -n 1)
+          if [ -z "$IMG_URL" ]; then
+            IMG_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | (startswith("Armbian_") and contains("_amlogic_s905x_") and endswith(".img.gz"))) | .browser_download_url' | head -n 1)
+          fi
+          if [ -z "$IMG_URL" ]; then
             echo "Error: Failed to fetch Armbian S905X image URL!"
             exit 1
           fi
-
           echo "Downloading: $IMG_URL"
-          curl -L "$IMG_URL" -o armbian_base.img.gz
-          gunzip armbian_base.img.gz
+          curl -L -o base_armbian.img.gz "$IMG_URL"
+          gunzip base_armbian.img.gz
 
-          # Inject signed GXL 792MHz U-Boot into MBR reserved area (skipping partition table)
-          dd if=fip_output/u-boot.bin.sd.bin of=armbian_base.img conv=notrunc,fsync bs=1 count=442
-          dd if=fip_output/u-boot.bin.sd.bin of=armbian_base.img conv=notrunc,fsync bs=512 skip=1 seek=1
+          dd if=../fip_output/u-boot.bin.sd.bin of=base_armbian.img conv=fsync,notrunc bs=1 count=442
+          dd if=../fip_output/u-boot.bin.sd.bin of=base_armbian.img conv=fsync,notrunc bs=512 skip=1 seek=1
 
-          # Mount BOOT partition and set DTB to meson-gxl-s905w-p281.dtb (compatible with 792MHz GXL)
-          LOOP_DEV=$(sudo losetup --find --show --partscan armbian_base.img)
+          LOOP_DEV=$(sudo losetup --show -fP base_armbian.img)
           sudo mkdir -p /mnt/armbian_boot
-          sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
-
+          sudo mount ${LOOP_DEV}p1 /mnt/armbian_boot
           if [ -f /mnt/armbian_boot/uEnv.txt ]; then
-            sudo sed -i 's|FDT=.*|FDT=/dtb/amlogic/meson-gxl-s905w-p281.dtb|g' /mnt/armbian_boot/uEnv.txt
+            sudo sed -i 's/FDT=.*/FDT=\/dtb\/amlogic\/meson-gxl-s905w-p281.dtb/g' /mnt/armbian_boot/uEnv.txt
           fi
           if [ -f /mnt/armbian_boot/extlinux/extlinux.conf ]; then
-            sudo sed -i 's|FDT .*|FDT /dtb/amlogic/meson-gxl-s905w-p281.dtb|g' /mnt/armbian_boot/extlinux/extlinux.conf
+            sudo sed -i 's/FDT .*/FDT \/dtb\/amlogic\/meson-gxl-s905w-p281.dtb/g' /mnt/armbian_boot/extlinux/extlinux.conf
           fi
-
           sudo sync
           sudo umount /mnt/armbian_boot
-          sudo losetup -d "$LOOP_DEV"
+          sudo losetup -d ${LOOP_DEV}
 
-          FINAL_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
-          gzip -c armbian_base.img > "$FINAL_NAME"
-          echo "FINAL_NAME=${FINAL_NAME}" >> $GITHUB_ENV
-          ls -lh "$FINAL_NAME"
+          BUILD_DATE=$(date +'%Y.%m.%d')
+          OUTPUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
+          gzip -c base_armbian.img > "../${OUTPUT_NAME}"
+          rm -f base_armbian.img
+          echo "OUTPUT_FILE=${OUTPUT_NAME}" >> $GITHUB_ENV
 
       - name: Publish Release to s905_p281 tag
         uses: softprops/action-gh-release@v2
@@ -88,12 +87,12 @@ jobs:
           tag_name: s905_p281
           name: "Armbian S905 GXL (792MHz DDR3 / P212) Build-北京联通Q5"
           body: |
-            Automated build of Armbian for Amlogic GXL (S905X/S905W/S905L) 1GB RAM using JetHub J80 (792MHz DDR3) mainline U-Boot.
+            自动构建的 Amlogic GXL（792MHz DDR3 低频内存时序，适配 S905L/S905W/S905M2 1GB 盒子）主线 U-Boot 与 Armbian 镜像。
 
-            ### TF 卡刷写步骤（Debian / Linux 终端）
+            ### TF 卡刷写步骤（以设备为 /dev/sda 为例）：
             ```bash
             # 1. 先将 Armbian 镜像写入 TF 卡
-            zcat Armbian_xx_s905_xx.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
+            zcat Armbian_xx_s905_p212.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
 
             # 2. 写入自制主线 U-Boot（必须跳过前 512 字节以保留 MBR 分区表）
             sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=1 count=442
@@ -103,5 +102,5 @@ jobs:
             sync
             ```
           files: |
-            ${{ env.FINAL_NAME }}
+            ${{ env.OUTPUT_FILE }}
             fip_output/u-boot.bin.sd.bin
