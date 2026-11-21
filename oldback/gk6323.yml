@@ -830,7 +830,9 @@ jobs:
           echo "=== 期望项：没生效只告警（可能依赖未满足或被改名）==="
           for s in OF SERIAL_AMBA_PL011 \
                    MMC MMC_DW MMC_DW_PLTFM MMC_DW_HI3798CV200 \
-                   COMMON_CLK_HI3798MV200 COMMON_CLK_GK6323V100C \
+                   #COMMON_CLK_HI3798MV200 COMMON_CLK_GK6323V100C \
+                   #使用自己的补丁CLK_GK6323V100C
+                   COMMON_CLK_GK6323V100C \
                    OF_MDIO MDIO_HISI_FEMAC \
                    GENERIC_PHY USB_PHY \
                    USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
