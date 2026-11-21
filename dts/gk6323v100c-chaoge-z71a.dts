@@ -1,31 +1,32 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * 国科微 GK6323V100C（整机型号 ChaoGe Z71A）板级设备树 —— 引导最小集
+ * 国科微 GK6323V100C（整机型号 ChaoGe Z71A）板级设备树 —— CRG 门控/复位版
  *
- * 数据来源：真机原厂内核导出的 /sys/firmware/devicetree/base，逐项对齐，
- * 没有臆造参数。真机实测为 4×Cortex-A55（part 0xd05）+ GICv3 + 国科私有 CRU，
- * 不是海思的 A53 + GIC-400，所以本文件不是海思 mv200h 板级的照抄。
+ * 基线 = 能正常进 rootfs 的那一版（256 行，引导最小集），本版只在它上面
+ * 加了三处，其余一行未动：
  *
- * 为什么只有这些节点 —— 引导器读了 16KiB 就收手：
- *   U-Boot 的 bootcmd 是
- *     mmc read 0 0x03FFC000 0x19000 0x20
- *   即从 dtbo 分区（起始块 0x19000）只读 0x20 = 32 块 = 16KiB 到 0x03FFC000，
- *   这个地址紧贴内核加载地址 0x04000000 之下。设备树超过 16KiB 就会被截断，
- *   内核解析失败 → 起不来。作者那版 dtbo 里的 dtb 只有 9156 字节。
- *   所以本文件只保留「点亮系统所必需」的节点，其余一律不写：
- *     串口控制台(uart0) / eMMC / 复位看门狗 / USB 主控 / 网口 / RTC
+ *   1) soc 下新增 CRG 节点 clock@f8a22000，compatible 用本仓库 900-01 补丁
+ *      新增的驱动认的 "goke,gk6323v100c-crg"，只提供 #reset-cells = <2>
+ *      （寄存器偏移, 位号）。该驱动在 probe 时直接把 eMMC / USB2 / FEMAC
+ *      三组时钟门控写开、软复位放开；
+ *   2) femac 节点补上 resets = <&cru 0xd0 3>; reset-names = "mac";
+ *      —— hisi_femac 驱动对 "mac" 复位是强制要求，缺了它 probe 直接失败
+ *      （真机日志里那条 hisi-femac ... failed with error -2 就是它）；
+ *      只给 "mac"，不给 "phy"：给了 "phy" 之后驱动会去读
+ *      hisilicon,phy-reset-* 延时属性，属性不存在会让 probe 直接失败。
+ *   3) 补回 vdp@7f000000 保留区（16MB）：U-Boot 把开机 logo 的帧缓冲放在
+ *      0x7f511000，内核若把这块当普通内存分配会立刻盖掉画面（花屏）。
  *
- * 本次相对上一版删掉的（引导用不到，需要时再加回来）：
- *   GPIO×8（PL061，无任何消费者）、uart2、uart3、i2c0、i2c1、spi0、
- *   chosen 下的 simple-framebuffer、vdp 保留内存，
- *   aliases 中除 serial0 以外的全部别名，以及根 compatible 的第三串。
+ * 为什么外设时钟仍用 fixed-clock、不引用 <&cru N>：
+ *   时钟 provider 一旦注册失败，所有引用它的外设会永久 -EPROBE_DEFER，
+ *   连挂根文件系统的 eMMC 一起拖死。门控由 CRG 驱动直接写寄存器完成，
+ *   效果相同而不会牵连启动路径。
  *
  * 与真机原树的有意差异（让主线内核能认领硬件）：
- *   1) eMMC 的 compatible 追加 "snps,dw-mshc"，使主线 dw_mmc-pltfm 能够认领
- *      （原 compatible 是国科 BSP 私有名，主线无此驱动）；
- *   2) 各外设时钟改指下面的 fixed-clock，不再引用国科私有 CRU —— 主线没有
- *      该 CRU 驱动，继续引用会让外设 probe 时永久 -EPROBE_DEFER；
- *   3) 真机树里主线无驱动的节点（aiao 音频、cpufreq、thermal、ir、cru）不写。
+ *   1) eMMC 的 compatible 追加 "snps,dw-mshc"，使主线 dw_mmc-pltfm 能够认领；
+ *   2) 各外设时钟用下面的 fixed-clock，不再引用国科私有 CRU；
+ *   3) 真机树里主线无驱动的节点（cpufreq、thermal、ir）不写；
+ *      aiao 音频改用补丁库 605-03 的 hisilicon,hi3798mv200-aiao-i2s 节点。
  *
  * 中断 specifier：GICv3 为 3 个 cell = <类型 号 触发方式>，类型 0=SPI、1=PPI，
  * 号是 GIC 视角的号（SPI 号 = 真机 /proc/interrupts 里的号 - 32）。
@@ -52,14 +53,10 @@
 	};
 
 	/*
-	 * 内存：2GiB，取自**真机导出的设备树**（hwinfo/hw1.txt 里的
-	 *   memory@0 { reg = <0x00 0x00 0x00 0x80000000>; }）
-	 * 与真机 /proc/meminfo 的 MemTotal: 2018984 kB，两者吻合。
-	 * ★ 不要被 U-Boot 那两行 "DRAM: 1 GiB" / "DDR Size: 1 GiB (Boot: 1 GiB)"
-	 *   误导：那是 U-Boot 自己的可映射上限（它启动内核只需 1GiB 就够），
+	 * 内存：2GiB，取自真机导出的设备树，与真机 /proc/meminfo 的
+	 * MemTotal: 2018984 kB 吻合。
+	 * ★ 不要被 U-Boot 的 "DRAM: 1 GiB" 误导：那是 U-Boot 自己的可映射上限，
 	 *   不代表硬件容量。写成 1GiB 会让内核白白少认一半内存。
-	 * 作者那版的 vdp@7f000000(2032MB) 与 framebuffer@7f511000 都在 2GiB 内，
-	 * 但本机第一阶段不用显示与硬解，故不写。
 	 */
 	memory@0 {
 		device_type = "memory";
@@ -81,9 +78,24 @@
 			reg = <0x00 0xd200000 0x00 0x400000>;
 			no-map;
 		};
+
+		/*
+		 * VDP/framebuffer 保留区（16MB）：
+		 * U-Boot 在 0x7f511000 放了开机 logo 的帧缓冲，内核若把这块当
+		 * 普通内存分配，会立刻盖掉画面造成花屏。与真机原树的
+		 * vdp@7f000000 对齐。
+		 */
+		vdp@7f000000 {
+			reg = <0x00 0x7f000000 0x00 0x01000000>;
+			no-map;
+		};
 	};
 
-	/* 国科 CRU 无主线驱动，外设时钟一律用固定时钟，由 bootloader 保持上电 */
+	/*
+	 * 外设时钟一律用固定时钟：国科私有 CRU 无主线驱动，引用它会让外设
+	 * probe 永久 -EPROBE_DEFER；CRG 的门控与复位由 900-01 补丁的驱动
+	 * 在 probe 时直接写寄存器处理。
+	 */
 	clocks {
 		clk_24m: clk-24m {
 			compatible = "fixed-clock";
@@ -101,6 +113,18 @@
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
 			clock-frequency = <75000000>;
+		};
+
+		/*
+		 * AIAO 送给板载 ES8316 的 MCLK。48k 家族要 256×fs = 12.288MHz，
+		 * 与下面 sound 节点的 simple-audio-card,mclk-fs = <256> 对应。
+		 * 真实 MCLK 引脚由 AIAO 块自己按 245.76MHz 分频驱动（在驱动里），
+		 * 这里这条只让 codec 驱动知道该按什么频率算。
+		 */
+		clk_12288: clk-12288 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <12288000>;
 		};
 	};
 
@@ -163,6 +187,25 @@
 		compatible = "simple-bus";
 		ranges = <0xf0000000 0x0 0xf0000000 0x10000000>;
 
+		/*
+		 * 国科 GK6323V100C 的 CRU/CRG（时钟 + 复位控制器）。
+		 *
+		 * 基址 f8a22000 的三重依据：
+		 *   - 真机原厂 TTL 第 207 行：gk6323v100c-cru f8a22000.clock
+		 *   - 反编译原厂设备树的 clock@f8a22000
+		 *   - Hi3798MV310 BSP 里 hivendor_clock 的基址
+		 *
+		 * compatible 由本仓库 patches/900-01 补丁新增的驱动绑定。
+		 * 只给 #reset-cells = <2>（寄存器偏移, 位号），例：
+		 *   resets = <&cru 0xd0 3>;
+		 * 不给 #clock-cells —— 外设时钟仍走上面的 fixed-clock。
+		 */
+		cru: clock@f8a22000 {
+			compatible = "goke,gk6323v100c-crg";
+			reg = <0xf8a22000 0x400>;
+			#reset-cells = <2>;
+		};
+
 		/* 控制台串口：bootargs 的 console=ttyAMA0 指这里 */
 		uart0: serial@f8b00000 {
 			compatible = "arm,pl011", "arm,primecell";
@@ -187,6 +230,15 @@
 				compatible = "nxp,pcf8563";
 				reg = <0x51>;
 			};
+
+			/* 板载声卡 codec：ES8316，地址 0x10（与真机原树一致） */
+			es8316: audio-codec@10 {
+				compatible = "everest,es8316";
+				reg = <0x10>;
+				clocks = <&clk_12288>;
+				clock-names = "mclk";
+				#sound-dai-cells = <0>;
+			};
 		};
 
 		/*
@@ -208,12 +260,33 @@
 			disable-wp;
 		};
 
-		/* 板载百兆网口：PHY 挂在下面的 mdio 总线上，地址 2 */
+		/*
+		 * 板载百兆网口：PHY 挂在下面的 mdio 总线上，地址 2。
+		 *
+		 * resets 只声明 "mac" = PERI_CRG51 @ 0xd0 bit3 —— hisi_femac 对它是
+		 * 强制要求，缺了 probe 直接 -ENOENT（日志里那条 error -2 就是它）。
+		 *
+		 * 有意不声明 "phy"（0x388 bit4）：真机原厂设备树里网卡节点完全没有
+		 * resets，PHY 一直保持 U-Boot 交棒时的状态，原厂内核在同一位置读到
+		 * 的 PHY ID 是 0x20669906（原厂 TTL: "phy_id=0x20669906"）。我们一旦
+		 * 给它声明 "phy"，驱动就会对 0x388 bit4 做一次「断言→延时→释放」，
+		 * 之后 PHY ID 读回 0x00000000 —— MDIO 上地址 2 认得到，但 PHY 芯片
+		 * 不响应（能力寄存器全读不出，ethtool 显示 Supported link modes:
+		 * Not reported、Supports auto-negotiation: No）。这颗是内置 FEPHY，
+		 * bit4 的语义未必与 mv200 相同，在拿到 GK6323 的确切位定义前不去碰它。
+		 *
+		 * phy_rst 在驱动里是可选的（if (priv->phy_rst)），不声明 "phy" 就整段
+		 * 跳过 hisi_femac_phy_reset。hisilicon,phy-reset-delays-us 保留不动：
+		 * 驱动只在 phy_rst 存在时才读它，留着不会报错，也方便以后恢复。
+		 */
 		femac: ethernet@f9c30000 {
 			compatible = "hisilicon,hisi-femac-v2";
 			reg = <0xf9c30000 0x1000>, <0xf9c31300 0x300>;
 			interrupts = <0 72 4>;
 			clocks = <&clk_75m>;
+			resets = <&cru 0xd0 3>;
+			reset-names = "mac";
+			hisilicon,phy-reset-delays-us = <10000 10000 500000>;
 			phy-mode = "mii";
 			phy-handle = <&phy2>;
 		};
@@ -230,7 +303,30 @@
 			};
 		};
 
-		/* USB2.0：真机只有 EHCI/OHCI，无 xhci */
+		/*
+		 * AIAO 音频控制器（国科叫 gk6323-aiao，寄存器与海思 mv200 同源）。
+		 * 主板把 I2S 送给 i2c2 上的 ES8316，MCLK 也由本块产生。
+		 *
+		 * compatible 取补丁库 605-03 那句话。注意它的 mv200 变体表只暴露
+		 * HDMI 那个发送端口（DAI 索引 0），板载 ES8316 若接在别的发送端口上，
+		 * 声卡能建起来但不出声 —— 那一步要改驱动端口表，不在设备树里。
+		 */
+		aiao: audio@f8cd0000 {
+			compatible = "hisilicon,hi3798mv200-aiao-i2s";
+			reg = <0xf8cd0000 0x4000>;
+			interrupts = <0 84 4>;
+			clocks = <&clk_50m>, <&clk_12288>;
+			clock-names = "aiao", "mclk";
+			resets = <&cru 0x118 4>;
+			#sound-dai-cells = <1>;
+		};
+
+		/*
+		 * USB2.0：真机只有 EHCI/OHCI，无 xhci。
+		 * 这两项不写 clocks / resets：接线统一由 CRG 驱动在 probe 时
+		 * 直接开门控、放复位（0xb8 / 0xbc），少一处引用就少一处
+		 * 可能导致 probe 延后的依赖。
+		 */
 		ohci: usb@f9880000 {
 			compatible = "generic-ohci";
 			reg = <0xf9880000 0x10000>;
@@ -251,6 +347,30 @@
 			clock-names = "apb_pclk";
 			clock-frequency = <24000000>;
 			timeout-sec = <60>;
+		};
+	};
+
+	/*
+	 * 声卡：与真机原树同构 —— simple-audio-card，CPU DAI 是 AIAO，
+	 * codec 是 ES8316，AIAO 当 bitclock/frame 主（AIAO 的 dai 只接受
+	 * CBP_CFP，所以两个 master 都指 cpu 子节点）。
+	 */
+	sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "GK6323-ES8316";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,mclk-fs = <256>;
+		simple-audio-card,bitclock-master = <&dailink_master>;
+		simple-audio-card,frame-master = <&dailink_master>;
+		simple-audio-card,widgets = "Headphone", "Headphones";
+		simple-audio-card,routing = "Headphones", "HPOL", "Headphones", "HPOR";
+
+		dailink_master: simple-audio-card,cpu {
+			sound-dai = <&aiao 0>;
+		};
+
+		simple-audio-card,codec {
+			sound-dai = <&es8316>;
 		};
 	};
 };

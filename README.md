@@ -39,7 +39,7 @@ USB `f9880000`/`f9890000`），但 **CPU 核与中断控制器是根本性不同
 | 架构与工具链 | `ARCH=arm` | `ARCH=arm64`，`aarch64-linux-gnu-` |
 | 内核镜像 | `zImage`（XZ压缩）→ `-A arm` uImage | `Image`（无压缩）→ `-A arm64` uImage |
 | 设备树 | 类同做法，追加到镜像末尾 | 追加到 `Image` 末尾，另单独发一份 |
-| 单板配置 | `kernel.config`（整份） | 功能配置 `gk6323v100c.config` + 体积裁剪 `slim.config` 两层叠加 |
+| 单板配置 | `kernel.config`（整份） | 功能配置 `kernel.config` + 体积裁剪 `slim.config` 两层叠加 |
 | 刷写分区 | `boot` | `boot = /dev/mmcblk0p15`，另有 `dtbo = /dev/mmcblk0p10` |
 
 ---
@@ -66,12 +66,12 @@ USB `f9880000`/`f9890000`），但 **CPU 核与中断控制器是根本性不同
 推到自己的 GitHub 仓库后：
 
 1. Settings → Actions → General → Workflow permissions 选 **Read and write**。
-2. Actions 里选「GK6323V100C 内核自动构建」→ Run workflow。
-3. 也可以在改动 `gk6323v100c.config`、`slim.config`、`apply_histb_patches.sh`、`dts/*.dts`
+2. Actions 里选「GK6323V100C 主线内核自动构建」→ Run workflow。
+3. 也可以在改动 `kernel.config`、`slim.config`、`apply_histb_patches.sh`、`dts/*.dts`
    或本workflow时自动触发。
 
 > **配置分层说明（两层职责必须分清）**：
-> `gk6323v100c.config` = 功能层，**只写「要打开什么」**（`CONFIG_X=y` / `=m` / `="串"`）；
+> `kernel.config` = 功能层，**只写「要打开什么」**（`CONFIG_X=y` / `=m` / `="串"`）；
 > `slim.config` = 裁剪层，**只写「要关掉什么」**（`# CONFIG_X is not set`）。
 > 合并顺序：`defconfig` → 功能层 → 裁剪层 → `olddefconfig`，裁剪层必须在功能层之后。
 >

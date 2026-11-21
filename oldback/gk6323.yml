@@ -1,4 +1,4 @@
-name: GK6323V100C 内核自动构建
+name: GK6323V100C 主线内核自动构建
 
 # ============================================================
 # 本文件与 hi3798mv100 仓库的 hisi.yml 逐段同构：
@@ -48,10 +48,11 @@ on:
     branches: [ master, main ]
     paths:
       - '.github/workflows/gk6323.yml'
-      - 'gk6323v100c.config'
+      - 'kernel.config'
       - 'slim.config'
       - 'apply_histb_patches.sh'
       - 'dts/*.dts'
+      - 'patches/*.patch'
       - 'dts/check-dts.py'
   workflow_dispatch:
 
@@ -78,7 +79,7 @@ jobs:
       BOARD_DTS: dts/gk6323v100c-chaoge-z71a.dts
       TARGET_DTB: gk6323v100c-chaoge-z71a.dtb
       # 单板配置层
-      FRAGMENT: gk6323v100c.config
+      FRAGMENT: kernel.config
       # 实机分区：boot 起始 112M、长 60M；dtbo 起始 50M、长 2M
       BOOT_PART: /dev/mmcblk0p15
       BOOT_PART_LIMIT_MB: "60"
@@ -107,11 +108,13 @@ jobs:
       - name: 校验必要文件存在
         run: |
           set -euo pipefail
-          for f in apply_histb_patches.sh "$FRAGMENT" "$BOARD_DTS"; do
+          for f in apply_histb_patches.sh "$FRAGMENT" slim.config "$BOARD_DTS" dts/check-dts.py patches/900-01-clk-add-gk6323v100c-crg-driver.patch; do
             [ -f "$f" ] || { echo "::error::根目录缺少 $f"; exit 1; }
           done
+          [ -d patches ] || { echo "::error::根目录缺少 patches/ 目录"; exit 1; }
           chmod +x apply_histb_patches.sh
-          ls -lh apply_histb_patches.sh "$FRAGMENT" "$BOARD_DTS"
+          ls -lh apply_histb_patches.sh "$FRAGMENT" slim.config "$BOARD_DTS" dts/check-dts.py
+          ls -lh patches/ 2>/dev/null || echo "（仓库根目录无 patches/，首次运行时请新建）"
 
       - name: 工作流静态自检（防 set -e + pipefail 下的裸管道赋值）
         run: |
@@ -216,6 +219,17 @@ jobs:
           fi
           echo "版本校验通过：$ACT"
 
+      - name: 注入 GK6323 CRG 最小驱动补丁（900-01）
+        run: |
+          set -euo pipefail
+          # 把本仓库 patches/ 下的 9xx 高序号补丁拷到 histb-patches，
+          # apply_histb_patches.sh 会按文件名序号应用；900 系列在所有海思补丁之后，
+          # 这样对 drivers/clk/hisilicon/{Kconfig,Makefile} 的追加不会被后续补丁覆盖。
+          cp -v patches/900-*.patch histb-patches/
+          ls histb-patches/900-*.patch
+          echo "--- 900 补丁文件大小 ---"
+          wc -l histb-patches/900-*.patch
+
       - name: 应用 histb 补丁（调用仓库根目录 apply_histb_patches.sh）
         run: |
           set -euo pipefail
@@ -225,6 +239,111 @@ jobs:
           PATCHES_DIR="../histb-patches" CI=true bash ../apply_histb_patches.sh -y
           echo "=== 补丁后确认 ===（本仓库设备树自带，不再要求补丁库含 mv200h 板级 dts）"
           ls arch/arm64/boot/dts/hisilicon/ | head -20 || true
+
+      - name: 追加 GK6323 CRG 驱动到 Kconfig / Makefile（幂等）
+        run: |
+          set -euo pipefail
+          cd linux_build
+          KC=drivers/clk/hisilicon/Kconfig
+          MK=drivers/clk/hisilicon/Makefile
+          [ -f "$KC" ] || { echo "::error::$KC 不存在"; exit 1; }
+          [ -f "$MK" ] || { echo "::error::$MK 不存在"; exit 1; }
+
+          if grep -q "^config COMMON_CLK_GK6323V100C$" "$KC"; then
+            echo "OK Kconfig 已存在 COMMON_CLK_GK6323V100C，跳过"
+          else
+            {
+              # 必须用 printf：bash 内建 echo 不解析 \t，会把字面量 \t 写进
+              # Kconfig，导致 kconfig 解析报错（构建在 scripts/kconfig 阶段直接失败）。
+              printf '\n'
+              printf 'config COMMON_CLK_GK6323V100C\n'
+              # bool 而不是 tristate：本驱动必须在启动早期（arch_initcall_sync）
+              # 就把门控写开，编成模块会晚于外设 probe，没有意义。
+              printf '\tbool "GK6323V100C CRG gate/reset preset driver"\n'
+              printf '\tdepends on COMMON_CLK\n'
+              printf '\tdepends on HAS_IOMEM\n'
+              printf '\tdepends on RESET_CONTROLLER\n'
+              printf '\thelp\n'
+              printf '\t  Gate on and release the eMMC/USB2/FEMAC clocks and resets\n'
+              printf '\t  of the GK6323V100C CRG, and expose a two-cell\n'
+              printf '\t  (offset, bit) reset controller.  No clock provider is\n'
+              printf '\t  registered; PLLs are left as U-Boot set them.\n'
+            } >> "$KC"
+            echo "OK 已向 Kconfig 追加 COMMON_CLK_GK6323V100C"
+          fi
+
+          if grep -q "crg-gk6323v100c" "$MK"; then
+            echo "OK Makefile 已存在 crg-gk6323v100c，跳过"
+          else
+            printf 'obj-$(CONFIG_COMMON_CLK_GK6323V100C)\t+= crg-gk6323v100c.o\n' >> "$MK"
+            echo "OK 已向 Makefile 追加 crg-gk6323v100c.o"
+          fi
+
+          tail -12 "$KC"
+          echo "---"
+          tail -5 "$MK"
+
+      - name: 应用 GK6323 DTB 兜底启动补丁（照搬 Hi3798MV320 逻辑）
+        run: |
+          set -euo pipefail
+          cd linux_build
+          HS=arch/arm64/kernel/head.S
+
+          # ★ 这里不再用「手写 diff + patch」的办法。手写补丁每增删一行都要人工同步
+          #   @@ 头里的行数与 "N insertions(+)"；写错一行，patch 就当头报
+          #     malformed patch at line NN
+          #   并直接退出，后面的检查一个字都不跑（2026-11-20 那次构建就是如此：
+          #   hunk 头写 @@ -88,6 +88,16 @@，正文却插了 11 行，正确应为 +88,17）。
+          #   改成脚本插入：不涉及行数计数，带幂等哨兵，重复跑只插一次；
+          #   锚点不唯一时直接中止，不做「猜一个位置硬插」。
+          #
+          #   寄存器只用 x20/x21，**绝不碰 x19**：
+          #   x19 由上一行的 record_mmu_state 写入，保存「进内核时 MMU 是否已开」，
+          #   后面 cbnz x19 / mov x0, x19 还要读它。早前那版补丁写 mov x19, x0，
+          #   把 x19 覆盖掉 —— 即使补丁打上了，内核也会走错缓存维护分支。
+          #
+          #   0x03FFC000 的构造必须「低位 movz + 高位 movk」：
+          #     movz x0, #0xc000           → x0 = 0x0000C000
+          #     movk x0, #0x03ff, lsl #16  → x0 = 0x03FFC000
+          #   早前那版写成 movz #0xc000, lsl #16 再 movk #0x03ff, lsl #16，
+          #   两条都左移 16，实际得到的是 0x03FF0000（差了 0xC000），
+          #   内核照样找不到 dtb。
+          #
+          #   ★ 魔数比较有大小端坑：FDT 魔数 0xd00dfeed 在文件里按**大端**存放，
+          #     `ldr w20, [x0]` 按小端读出来是 0xedfe0dd0，直接拿它跟 movz/movk
+          #     拼出的 0xd00dfeed 比较**永远不相等**，兜底分支等于没写。
+          #     故 ldr 之后补一条 `rev w20, w20` 把字节序翻正再比较。
+          if grep -q 'GK6323_DTB_FALLBACK' "$HS"; then
+            echo "OK   已存在 DTB 兜底代码，跳过插入"
+          else
+            N="$(grep -cE '^[[:space:]]*bl[[:space:]]+preserve_boot_args[[:space:]]*$' "$HS" || true)"
+            if [ "$N" -ne 1 ]; then
+              echo "::error::head.S 里 bl preserve_boot_args 出现 $N 次（期望 1 次），拒绝盲目插入"
+              exit 1
+            fi
+            # 用 printf %b 生成带真 tab 的汇编片段：不经 heredoc、不经 yaml 缩进剥离，
+            # 避免「复制粘贴把行首 tab 吃掉」这类只能靠肉眼发现的破坏。
+            printf '%b\n' \
+              '\t/* GK6323_DTB_FALLBACK: U-Boot passes ATAGS addr in x0; if x0 is not a valid FDT, use 0x03FFC000 */' \
+              '\tldr\tw20, [x0]' \
+              '\trev\tw20, w20' \
+              '\tmovz\tw21, #0xd00d, lsl #16' \
+              '\tmovk\tw21, #0xfeed' \
+              '\tcmp\tw20, w21' \
+              '\tb.eq\t1f' \
+              '\tmovz\tx0, #0xc000' \
+              '\tmovk\tx0, #0x03ff, lsl #16' \
+              '1:' > /tmp/gk6323-ins.S
+            awk 'FNR==NR{ins=ins $0 ORS; next}
+                 /^[[:space:]]*bl[[:space:]]+preserve_boot_args[[:space:]]*$/ && !d {printf "%s", ins; d=1}
+                 {print}' /tmp/gk6323-ins.S "$HS" > "$HS.new"
+            mv "$HS.new" "$HS"
+            echo "OK   DTB 兜底代码已插入"
+          fi
+
+          # 插入结果原样打印，便于核对寄存器与地址
+          grep -n -B2 -A11 'GK6323_DTB_FALLBACK' "$HS" || true
+          echo "启动逻辑：内核第一时间校验 x0 中的 dtb 魔数（0xd00dfeed），无效则自动读取 0x03FFC000（p10 固定加载地址）"
 
       - name: 部署内核配置并强制关键驱动内置
         run: |
@@ -292,6 +411,19 @@ jobs:
           # 只是防止叠加过程中丢项，符号名以内核 Kconfig 为准
           scripts/config --enable ARCH_HISI
           scripts/config --enable OF
+          # 时钟 / 复位：国科私有 CRU（gk6323 那一套）主线里没有驱动，本板
+          # dts 的外设时钟目前仍指向 fixed-clock 节点（见 dts 头部注释第 2 条）。
+          # 补丁库的 COMMON_CLK_HI3798MV200（510-02 / 410-02）提供 Hi3798MV200
+          # 的 CRG（时钟+复位）驱动 —— 这是把外设时钟门控真正打开的正路，符号名
+          # 已在补丁库里逐字核对；这里打开它，等设备树接上 CRG 节点后即可 bind。
+          # ★ 历史教训：曾在此处误加 COMMON_CLK_HI3516CV300 / CLK_GK6323V100C /
+          #   RESET_GK6323，这三个符号在本内核树里根本不存在 —— 构建会被自己的
+          #   「必须项」校验挡下（日志停在 CONFIG_CLK_GK6323V100C 未开启）。
+          scripts/config --enable COMMON_CLK
+          scripts/config --enable COMMON_CLK_HI3798MV200
+          scripts/config --enable COMMON_CLK_GK6323V100C
+          scripts/config --enable RESET_CONTROLLER
+          scripts/config --enable RESET_HISI
           # 中断控制器 / 定时器（真机是 GICv3 + A55，不是 GIC-400 + A53）
           scripts/config --enable ARM_GIC
           scripts/config --enable ARM_GIC_V3
@@ -303,11 +435,12 @@ jobs:
           # ★ 别加 SERIAL_AMBA_PL011_EARLYCON —— 主线树里没有这个符号（那是 8250
           #   系列的命名风格），PL011 的 earlycon 只受 SERIAL_EARLYCON 一个开关控制。
           scripts/config --enable SERIAL_EARLYCON
-          # eMMC：(设备树追加 "snps,dw-mshc") → pltfm + dw
+          # eMMC：(设备树追加 "snps,dw-mshc") → pltfm + dw + Hi3798 专用 glue
           scripts/config --enable MMC
           scripts/config --enable MMC_BLOCK
           scripts/config --enable MMC_DW
           scripts/config --enable MMC_DW_PLTFM
+          scripts/config --enable MMC_DW_HI3798CV200
           # 根文件系统（NLS 是 NLS_CODEPAGE_* 的父符号）
           scripts/config --enable EXT4_FS
           scripts/config --enable NLS
@@ -319,6 +452,21 @@ jobs:
           scripts/config --enable PARTITION_ADVANCED
           scripts/config --enable MSDOS_PARTITION
           scripts/config --enable CMDLINE_PARTITION
+          # 声音：本仓库的落点仍是 **USB 声卡**（见下方 SND_USB_AUDIO），这条不受影响。
+          # 板载 ES8316 走国科 AIAO 那一路。补丁库 505-03 / 505-04 提供了 AIAO 的
+          # I2S 端口与声卡驱动，符号名逐字核对为 SND_SOC_HISTB_AIAO_I2S 与
+          # SND_SOC_HISTB_AIAO_CARD（**没有** SND_SOC_HISTB_AIAO 这个符号），
+          # 配合 codec SND_SOC_ES8316 才有可能出声。这里一并打开；设备树侧的
+          # AIAO / ES8316 / sound 三个节点已在本版接上。
+          scripts/config --enable SND
+          scripts/config --enable SND_SOC
+          scripts/config --enable SND_SOC_ES8316
+          scripts/config --enable SND_SOC_HISTB_AIAO_I2S
+          scripts/config --enable SND_SOC_HISTB_AIAO_CARD
+          # simple-audio-card：与真机原树一样，板载 ES8316 用 generic 声卡绑定，
+          # 不写 histb 那张专用卡节点。缺了这个符号，sound{} 节点无人认领。
+          scripts/config --enable SND_SIMPLE_CARD
+          scripts/config --enable I2C
           # 板载百兆网口（★ 同样先开父菜单 NET_VENDOR_HISILICON，并带上 PHYLIB）
           scripts/config --enable PHYLIB
           scripts/config --enable OF_MDIO
@@ -358,7 +506,7 @@ jobs:
           scripts/config --enable PHY_HISI_INNO_USB2
           scripts/config --enable USB_STORAGE
           # ALSA 骨架：SND_PCM / SND_TIMER 是**无 prompt 符号**，取值只由 select 决定，
-          # 在这里 --enable 也会被 olddefconfig 重算，故不写（见 gk6323v100c.config 附录）。
+          # 在这里 --enable 也会被 olddefconfig 重算，故不写（见 kernel.config 附录）。
           # ★ 本仓库存在的理由：USB 声卡 / USB DAC
           scripts/config --enable SND_USB
           # ★ 这里必须用 --module，不能用 --enable：--enable 对 tristate 符号等于设成 y，
@@ -368,7 +516,7 @@ jobs:
           # 模块支持：作者那版是纯内置内核（/proc/modules 不存在）
           scripts/config --enable MODULES
           scripts/config --enable MODULE_UNLOAD
-          # 启动参数不再在这里置空：gk6323v100c.config 叠加层里已带上完整的
+          # 启动参数不再在这里置空：kernel.config 叠加层里已带上完整的
           # CONFIG_CMDLINE 与 CONFIG_CMDLINE_FORCE=y（理由见该文件对应段落）。
           # ★ 这里原本是 `scripts/config --set-str CMDLINE ""`。本步骤在 merge 之后
           #   执行，保留它会把叠加层那行长命令行又清成空串，earlycon 随之消失 ——
@@ -379,6 +527,9 @@ jobs:
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
           echo "=== 必须项：少一项这台机器就起不来或目标落空，直接中止 ==="
+          # ★ 这份清单必须与当前内核树里**真实存在**的符号一致。2026-11-20 那次
+          #   构建就是被这条清单自己挡下的：里面写了 CLK_GK6323V100C / RESET_GK6323
+          #   两个内核树里没有的符号，olddefconfig 丢掉它们、校验立刻中止。
           for s in ARCH_HISI ARM_GIC_V3 ARM_ARCH_TIMER SERIAL_AMBA_PL011_CONSOLE \
                    MMC_BLOCK MMC_DW_PLTFM \
                    EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
@@ -430,13 +581,16 @@ jobs:
 
           echo "=== 期望项：没生效只告警（可能依赖未满足或被改名）==="
           for s in OF SERIAL_AMBA_PL011 \
-                   MMC MMC_DW \
+                   MMC MMC_DW MMC_DW_PLTFM MMC_DW_HI3798CV200 \
+                   COMMON_CLK_HI3798MV200 COMMON_CLK_GK6323V100C \
                    OF_MDIO MDIO_HISI_FEMAC \
                    GENERIC_PHY USB_PHY \
                    USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
                    I2C_HIX5HD2 GPIO_PL061 SPI_PL022 RTC_DRV_PCF8563 ARM_SP805_WATCHDOG \
                    DEBUG_FS \
-                   SND SND_USB \
+                   SND SND_USB SND_SOC SND_SOC_ES8316 \
+                   SND_SOC_HISTB_AIAO_I2S SND_SOC_HISTB_AIAO_CARD \
+                   SND_SIMPLE_CARD \
                    NLS NLS_UTF8 NLS_CODEPAGE_936; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
@@ -603,7 +757,12 @@ jobs:
           "$DTC" -I dts -O dtb -o "$OUT" "$BOARD_DTS"
           echo "=== 反编译回读关键项，确认编译结果与真机一致 ==="
           "$DTC" -I dtb -O dts "$OUT" > /tmp/rt.dts
-          for k in "arm,cortex-a55" "arm,gic-v3" "arm,pl011" "snps,dw-mshc" "gk6323v100c"; do
+          for k in "arm,cortex-a55" "arm,gic-v3" "arm,pl011" "goke,gk6323v100c" \
+                   "goke,gk6323v100c-crg" "goke,gk6323v100c-dw-mshc" "snps,dw-mshc" \
+                   "hisilicon,hisi-femac-v2" "hisilicon,hisi-femac-mdio" \
+                   "hisilicon,hi3798mv200-aiao-i2s" "everest,es8316" \
+                   "generic-ehci" "generic-ohci" \
+                   "nxp,pcf8563" "arm,sp805-wdt"; do
             if grep -q "$k" /tmp/rt.dts; then
               echo "OK   $k"
             else
@@ -754,7 +913,7 @@ jobs:
           # 这些符号都由 slim.config（裁剪层）关闭，核对时看是否为 n：
           # 仍是 =y 说明没关掉；=m 多半是被 select 拉起，详见 README 的自检对照表。
           echo "=== 裁剪层效果核对（关键项应为 n / m）==="
-          for s in DRM MEDIA_SUPPORT SND_SOC ATA MD BLK_DEV_DM IPV6 NETFILTER BT WLAN \
+          for s in DRM MEDIA_SUPPORT ATA MD BLK_DEV_DM IPV6 NETFILTER BT WLAN \
                    VIRTUALIZATION KVM XEN FTRACE KPROBES BPF_SYSCALL \
                    KALLSYMS RC_CORE HID CPU_FREQ CPU_IDLE ARM_CMN CRYPTO_ZSTD SCSI_UFSHCD; do
             V="$(grep -E "^CONFIG_${s}=|^# CONFIG_${s} is not set" .config 2>/dev/null | head -1 || true)"
@@ -806,6 +965,19 @@ jobs:
           cp arch/arm64/boot/Image out/Image
           # 单独发一份 dtb：真机运行时的设备树来自 dtbo 分区，这一份必须写入 p10
           cp "arch/arm64/boot/dts/hisilicon/$TARGET_DTB" out/
+          # 刷机包格式的 dtbo.img：正好 2MiB（= p10 分区大小），全零补齐后再把 dtb 覆盖到开头。
+          #   与作者原厂 dtbo.img 逐字节同构（原厂：dtb 9156 字节 + 全零补到 2MiB）。
+          #   TTL 刷机时可以直接 tftp 整块写 p10，不必再自己算 dtb 实际长度、也不必先擦。
+          DTBO_BYTES=$((2 * 1024 * 1024))
+          dd if=/dev/zero of="out/dtbo.img" bs=4096 count=$((DTBO_BYTES / 4096)) status=none
+          dd if="out/$TARGET_DTB" of="out/dtbo.img" conv=notrunc status=none
+          DTBO_SZ=$(stat -c%s "out/dtbo.img")
+          [ "$DTBO_SZ" -eq "$DTBO_BYTES" ] || { echo "::error::dtbo.img 大小 $DTBO_SZ != $DTBO_BYTES"; exit 1; }
+          DTBO_MAGIC=$(od -A n -t x1 -N 4 "out/dtbo.img" | tr -d ' \n\t')
+          [ "$DTBO_MAGIC" = "d00dfeed" ] || { echo "::error::dtbo.img 魔数 $DTBO_MAGIC != d00dfeed"; exit 1; }
+          DTBO_TOTAL=$(od -A n --endian=big -t u4 -j 4 -N 4 "out/dtbo.img" | tr -d ' \n\t')
+          [ "$DTBO_TOTAL" -eq "$(stat -c%s "out/$TARGET_DTB")" ] || { echo "::error::dtbo.img 里的 FDT totalsize=$DTBO_TOTAL 与 dtb 文件大小不符"; exit 1; }
+          echo "dtbo.img：$DTBO_SZ 字节（2MiB），FDT totalsize=$DTBO_TOTAL，内嵌 dtb 与 out/$TARGET_DTB 同源"
           cp .config "out/config-$KREL"
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$PWD/out/_mod" modules_install
           rm -f out/_mod/lib/modules/*/build out/_mod/lib/modules/*/source
@@ -813,108 +985,130 @@ jobs:
           rm -rf out/_mod
           # 生成校验清单，便于上机前后核对
           cd out
-          sha256sum boot.img modules.tar.gz Image "$TARGET_DTB" "config-$KREL" > sha256sums.txt
+          sha256sum boot.img dtbo.img modules.tar.gz Image "$TARGET_DTB" "config-$KREL" > sha256sums.txt
           cat sha256sums.txt
           echo "内核 release: $KREL"
           echo "=== 产物列表 ==="
           ls -lh
 
-      - name: 生成发布说明并校验产物
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: gk6323v100c-linux-${{ env.PATCHES_KERNEL_VERSION }}
+          if-no-files-found: error
+          retention-days: 90
+          path: linux_build/out/*
+
+           
+      - name: 生成发布说明
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PATCHES_KERNEL_VERSION: ${{ env.PATCHES_KERNEL_VERSION }}
+          PATCHES_BASE_SHA: ${{ env.PATCHES_BASE_SHA }}
           TARGET_DTB: ${{ env.TARGET_DTB }}
           UIMAGE_LOADADDR: ${{ env.UIMAGE_LOADADDR }}
-          BOOT_PART: ${{ env.BOOT_PART }}
-          DTBO_PART: ${{ env.DTBO_PART }}
         run: |
           set -euo pipefail
           cd linux_build/out
           KREL="$PATCHES_KERNEL_VERSION"
-          NOTES=RELEASE_NOTES.md
+          DTB_NAME="${TARGET_DTB}"
 
-          cat > "$NOTES" <<EOF
-          # GK6323V100C 内核 ${KREL}
+          cat > RELEASE_NOTES.md <<'EOF'
+          # GK6323V100C 主线内核 @KREL@
 
-          面向国科微 GK6323V100C 机顶盒（真机 4×Cortex-A55 + GICv3，ARM64）的自编译内核。
+          面向国科微 GK6323V100C（ChaoGe Z71A）的自编译主线内核。
 
-          ## 说明文本
+          ## 说明
 
-          - 内核基线：Linux ${KREL}（与 hi3798mv100 仓库同一 pin），按补丁库 baseline 提取工作树
-          - 补丁来源：histb-mainline_patches，严格应用（等价 --fuzz=0），冲突即回滚
-          - 设备树：${TARGET_DTB}，逐项取自真机导出的设备树（A55 / GICv3 / 国科专有 IP 全部对齐）
-          - 内核配置：仓库 gk6323v100c.config；串口、eMMC、ext4、命令行分区表均编入内核（=y）
-          - 关键项：CONFIG_SND_USB_AUDIO —— 作者那版 BSP 内核没有编入，USB 声卡因此不出声
-          - 该驱动形态与 mv100 的 kernel.config 一致（=m），所以必须先把模块解开再重启
-          - 模块支持：CONFIG_MODULES=y，作者那版是纯内置内核（/proc/modules 不存在）
-          - 镜像格式：uImage，-A arm64，不压缩（-C none），加载/入口地址 ${UIMAGE_LOADADDR}
-          - 设备树同时追加在内核镜像末尾（追加处校验魔数 d00dfeed）并单独发布
-          - 大小约束：uImage 的 ih_size 已压到 13MiB 以内。原因：bootm 跳转内核前
-            会拿 ih_size 与 U-Boot 编译时的 CONFIG_SYS_BOOTM_LEN 比较，超了就报
-            'Image too large: increase CONFIG_SYS_BOOTM_LEN' 并复位（红灯循环重启）。
-            作者原厂 boot.img 14,028,808 字节（ih_size 14,028,744）能启动、上一版
-            约 15MB 的被拒，故上限落在 (13.38MiB, 15MB)，最可能是 14MiB。
-          - 提醒：arm32 的 hi3798mv100 靠 XZ 自解压 zImage 做到 8~9M，这套在本机
-            用不上（arm64 的 Image 无解压头、也不压缩），只能真把 Image 编小。
-          - 本内核版本号是 ${KREL}，与作者那版 6.18.46-gk6323-debian 不同，
-            模块会装到 /lib/modules/${KREL} 下，内核与模块必须一起替换
+          - 内核基线：Linux @KREL@（commit @BASE_SHA@）
+          - 补丁来源：histb-mainline_patches，严格应用（--fuzz=0），冲突即回滚
+          - 架构：ARM64 Cortex-A55 + GICv3
+          - 镜像格式：uImage 加载/入口均为 @LOADADDR@，不压缩（-C none）
+          - 设备树：@DTB_NAME@，单独刷入 p10（dtbo）分区
+            **内核内置 DTB 兜底逻辑：启动时自动校验 x0 中的 dtb 地址，无效则自动读取 0x03FFC000（即 p10 加载地址），不需要修改 bootcmd、不需要特殊启动参数，原厂自动启动流程直接生效**
+          - USB 音频：snd-usb-audio 已编译为模块（m），随 modules.tar.gz 一同安装
 
           ## 产物
 
           | 文件 | 用途 |
           | --- | --- |
-          | boot.img | 内核镜像（uImage，内嵌设备树），写入 ${BOOT_PART} |
-          | ${TARGET_DTB} | 设备树，**必须**写入 ${DTBO_PART}（真机运行时用的是这个分区的 dtb） |
-          | modules.tar.gz | 内核模块，解压到根目录 / |
+          | boot.img | 内核镜像，写入 p15（boot）分区 |
+          | @DTB_NAME@ | 设备树原文件，可 `dd` 写入 p10（dtbo）分区 |
+          | dtbo.img | 2MiB 刷机包格式设备树（dtb + 全零补齐），TTL 下可整块 `tftp` + `mmc write` 写 p10 |
+          | modules.tar.gz | 内核模块（含 USB 音频），解压到根目录 / |
           | Image | 未打包的裸内核，仅供核对 |
-          | config-${KREL} | 本次实际使用的内核配置 |
+          | config-* | 本次实际使用的内核配置 |
           | sha256sums.txt | 上述产物的校验值 |
 
           ## 刷写步骤（顺序不可颠倒）
 
-          1. 把 boot.img、${TARGET_DTB}、modules.tar.gz 传到机器 /tmp 目录
-          2. 先备份：dd if=${BOOT_PART} of=/root/boot.bak bs=1M conv=fsync
-          3. 先装模块：cd / && tar -xzf /tmp/modules.tar.gz && sync
-          4. 刷内核：dd if=/tmp/boot.img of=${BOOT_PART} bs=1M conv=fsync && sync
-          5. 刷设备树：dd if=/tmp/${TARGET_DTB} of=${DTBO_PART} bs=1K conv=fsync && sync
-          6. 等待数秒后 reboot
+          1. 备份原 boot 分区：
+          sudo dd if=/dev/mmcblk0p15 of=/root/boot.bak bs=1M conv=fsync
+          2. 先解压模块：`cd / && sudo tar -xzf /tmp/modules.tar.gz && sync`
+          3. 刷内核：`sudo dd if=/tmp/boot.img of=/dev/mmcblk0p15 bs=1M conv=fsync && sync`
+          4. **刷设备树（必须）**：`sudo dd if=/tmp/dtbo.img of=/dev/mmcblk0p10 bs=1M conv=fsync && sync`
+             （也可用 @DTB_NAME@：`sudo dd if=/tmp/@DTB_NAME@ of=/dev/mmcblk0p10 bs=1K conv=fsync && sync`）
+          5. 重启：`sudo reboot`
 
+          或使用脚本：
+          sudo bash scripts/flash-boot.sh -i /tmp/boot.img -m /tmp/modules.tar.gz -d /tmp/@DTB_NAME@
+          
           ## 回滚
 
-          若启动异常（指示灯异常闪烁、TTL 无输出），用备份镜像写回：
+          启动异常时，刷回备份内核：
+          sudo dd if=/root/boot.bak of=/dev/mmcblk0p15 bs=1M conv=fsync && sync && sudo reboot
+          
+          ## 验证 USB 音频
 
-          dd if=/root/boot.bak of=${BOOT_PART} bs=1M conv=fsync && sync && reboot
-
-          注意：本次同时改写了 dtbo 分区。回滚内核不会恢复原来的设备树，
-          若手上有原机 dtbo.img，请一并写回 ${DTBO_PART}。
-
-          校验值见 sha256sums.txt，上机前建议先在电脑上比对一次。
+          系统启动后插上 USB 声卡：
+          sudo modprobe snd-usb-audio
+          aplay -l
+          
           EOF
-          sed -i 's/^ *//' "$NOTES"
-          head -20 "$NOTES"
 
-          CONFIG_ASSET="$(ls -1 config-* 2>/dev/null | head -1 || true)"
-          if [ -z "$CONFIG_ASSET" ]; then
-            echo "::error::out/ 里找不到 config-* 产物，无法随 Release 发布"
-            exit 1
-          fi
-          echo "附带发布本次内核配置：$CONFIG_ASSET"
+          sed -i \
+            -e "s/@KREL@/${KREL}/g" \
+            -e "s/@BASE_SHA@/${PATCHES_BASE_SHA}/g" \
+            -e "s/@DTB_NAME@/${DTB_NAME}/g" \
+            -e "s/@LOADADDR@/${UIMAGE_LOADADDR}/g" \
+            RELEASE_NOTES.md
 
-      - name: 发布到 GitHub Release
+          sed -i 's/^ *//' RELEASE_NOTES.md
+          head -20 RELEASE_NOTES.md
+
+      - name: 发布到 GitHub Release-最新版
         uses: softprops/action-gh-release@v2
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: GK6323V100C_latest
+          tag_name: gk6323v100c-latest
           body_path: linux_build/out/RELEASE_NOTES.md
           allowUpdates: true
           replacesArtifacts: true
           artifactErrorsFailBuild: true
           files: |
             linux_build/out/boot.img
+            linux_build/out/dtbo.img
             linux_build/out/${{ env.TARGET_DTB }}
             linux_build/out/modules.tar.gz
             linux_build/out/Image
             linux_build/out/sha256sums.txt
             linux_build/out/config-*
 
+      - name: 发布到 GitHub Release-备份版
+        uses: softprops/action-gh-release@v2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: gk6323v100c-${{ env.PATCHES_KERNEL_VERSION }}
+          body_path: linux_build/out/RELEASE_NOTES.md
+          allowUpdates: true
+          replacesArtifacts: true
+          artifactErrorsFailBuild: true
+          files: |
+            linux_build/out/boot.img
+            linux_build/out/dtbo.img
+            linux_build/out/${{ env.TARGET_DTB }}
+            linux_build/out/modules.tar.gz
+            linux_build/out/Image
+            linux_build/out/sha256sums.txt
+            linux_build/out/config-*

@@ -71,7 +71,7 @@
 - 原因：它们都是**无 prompt 符号** —— Kconfig 里只有 `config X`，没有提示
   字符串，取值只由 `default` / `select` 决定。fragment 与 `scripts/config`
   都改不动它，**写了必然被 `olddefconfig` 重算**，这条告警属误报。
-- 处理：从 `gk6323v100c.config` 里删掉（v6 已删）。想知道它们实际是什么，
+- 处理：从 `kernel.config` 里删掉（v6 已删）。想知道它们实际是什么，
   看构建日志里「派生符号报告」一节，该节列出 `ARM_GIC_V3`、
   `ARM_GIC_V3_ITS`、`SND_PCM`、`SND_TIMER`、`SND_HWDEP`、`SND_RAWMIDI`、
   `SND_SOC`、`MDIO_DEVICE` 的真实取值。
@@ -450,7 +450,7 @@ INFO:    SPSR = 0x3c5
 - **`mkimage -C gzip` 同样绕不过去**：`bootm` 的 gzip 分支把
   `CONFIG_SYS_BOOTM_LEN` 当作解压输出缓冲上限，解压后的 `Image` 仍须 ≤ 该值。
 - 处理：在 **`slim.config`**（裁剪层，只写 `# CONFIG_XXX is not set`）里继续关掉
-  无关子系统、重建 —— v11 起所有裁剪项都已从 `gk6323v100c.config` 搬到该文件。
+  无关子系统、重建 —— v11 起所有裁剪项都已从 `kernel.config` 搬到该文件。
   流水线会在打包步骤打印 `ih_size`、`size vmlinux`、**最大的 30 个内置 `.o`**
   与顶层目录占用，照那份清单接着砍即可。
   关键认识：Image 里只装 `=y` 的代码，编成 `=m` 的驱动对 Image 体积**零贡献**

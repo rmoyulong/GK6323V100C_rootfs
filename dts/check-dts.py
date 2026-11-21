@@ -86,7 +86,7 @@ for lineno, raw in enumerate(body.splitlines(), 1):
     errors.append("第 %d 行疑似漏分号：%s" % (lineno, line[:70]))
 
 # --- 3. label 定义与引用 ---
-labels = set(re.findall(r"^\s*([A-Za-z_][\w-]*)\s*:\s*[\w@-]+\s*\{", body, re.M))
+labels = set(re.findall(r"^\s*([A-Za-z_][\w-]*)\s*:\s*[\w@,.\-+]+\s*\{", body, re.M))
 refs = set(re.findall(r"&([A-Za-z_][\w-]*)", body))
 missing = sorted(r for r in refs if r not in labels)
 for m in missing:

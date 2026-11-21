@@ -1,16 +1,32 @@
-# 构建过程产物
+# 构建产物
 linux_build/
-histb-patches/
 out/
-*.o
-*.a
-*.cmd
-*.order
-*.symvers
+histb-patches/
+*.tar.gz
+*.zip
 
-# 本地试验留下的镜像与备份
+# 设备树编译产物
 *.dtb
-Image
-Image-dtb
+!dts/*.dts
+
+# 内核镜像
 boot.img
-modules.tar.gz
+uImage
+Image
+zImage
+zImage-dtb
+Image-dtb
+
+# 配置备份
+.config.old
+.config.bak
+*.orig
+
+# 备份文件
+*~
+*.bak
+*.swp
+.DS_Store
+
+# 日志
+*.log

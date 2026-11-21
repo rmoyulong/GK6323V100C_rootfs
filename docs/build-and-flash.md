@@ -12,7 +12,7 @@
   Workflow permissions 选 **Read and write permissions**（发布 Release 需要）。
 - 触发途径：Actions 页手动 Run workflow；或改动以下任一文件自动触发：
   - `.github/workflows/gk6323.yml`
-  - `gk6323v100c.config`
+  - `kernel.config`
   - `apply_histb_patches.sh`
   - `dts/gk6323v100c-chaoge-z71a.dts`、`dts/check-dts.py`
 
@@ -20,11 +20,11 @@
 
 | 步骤 | 做什么 | 把关 |
 | --- | --- | --- |
-| 校验必要文件 | 确认 `apply_histb_patches.sh`、`gk6323v100c.config`、`dts/…dts` 都在 | 缺一个即中止 |
+| 校验必要文件 | 确认 `apply_histb_patches.sh`、`kernel.config`、`dts/…dts` 都在 | 缺一个即中止 |
 | 设备树静态校验 | `python3 dts/check-dts.py` | 漏分号、label 未定义、节点地址与 reg 不符 即中止 |
 | 拉源码 | 按 `PATCHES_BASE_SHA` 提取工作树 | 版本号与补丁基线不一致即中止 |
 | 应用补丁 | 严格应用（等价 `--fuzz=0`） | 冲突即回滚并中止 |
-| 部署配置 | defconfig → 叠加 `gk6323v100c.config` → `scripts/config` 补项 → `olddefconfig` | 必须项缺一即中止 |
+| 部署配置 | defconfig → 叠加 `kernel.config` → `scripts/config` 补项 → `olddefconfig` | 必须项缺一即中止 |
 | 编译 | `make Image` + `make modules` | — |
 | 编译自带设备树 | 用内核树自带 dtc 编译 `dts/…dts`；反编译回读 | 编译后的 dtb 缺 `cortex-a55`/`gic-v3`/`pl011`/`snps,dw-mshc`/`gk6323v100c` 即中止 |
 | 追加并打包 | 把 dtb 追加到 `Image` 末尾，校验魔数 `d00dfeed`，`mkimage -A arm64 -T kernel -C none` | 魔数不对、或镜像超 60M 即中止 |
