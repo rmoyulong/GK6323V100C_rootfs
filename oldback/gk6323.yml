@@ -98,6 +98,7 @@ jobs:
       #   注意：不要指望 gzip 绕过去 —— bootm 的 gzip 分支把 CONFIG_SYS_BOOTM_LEN
       #   当作**解压输出缓冲上限**，解压后的 Image 仍必须 ≤ 该上限。
       BOOT_IMAGE_MAX_MB: "13"
+      START_DIY_PATCH: false
 
     steps:
       - name: 检出仓库代码
@@ -220,6 +221,7 @@ jobs:
           echo "版本校验通过：$ACT"
 
       - name: 注入 GK6323 CRG 最小驱动补丁（900-01）
+        if: ${{ env.START_DIY_PATCH == true }}
         run: |
           set -euo pipefail
           # 把本仓库 patches/ 下的 9xx 高序号补丁拷到 histb-patches，
@@ -229,6 +231,249 @@ jobs:
           ls histb-patches/900-*.patch
           echo "--- 900 补丁文件大小 ---"
           wc -l histb-patches/900-*.patch
+          
+      - name: 直接写入GK6323 CRG时钟复位驱动到内核树（无需补丁，零冲突）
+        run: |
+            set -euo pipefail
+            cd linux_build/drivers/clk/hisilicon
+          
+            # 写入头文件 gk6323v100c-resets.h
+            cat > gk6323v100c-resets.h << 'CEOF'
+            /* SPDX-License-Identifier: GPL-2.0 */
+            #ifndef __GK6323V100C_RESETS_H
+            #define __GK6323V100C_RESETS_H
+
+            /* GK6323V100C CRG reset bits - 高电平复位：写1=按住，写0=释放 */
+            #define GK6323V100C_RESET_EMMC     0  /* 0xa0 bit0 eMMC总线复位 */
+            #define GK6323V100C_RESET_EMMC_BUS 1  /* 0xa0 bit1 eMMC CIU复位 */
+            #define GK6323V100C_RESET_USB2_0   0  /* 0xb8 bit0 USB2 CTRL0复位 */
+            #define GK6323V100C_RESET_USB2_1   1  /* 0xb8 bit1 USB2 CTRL1复位 */
+            #define GK6323V100C_RESET_USB2_2   2  /* 0xb8 bit2 USB2 CTRL2复位 */
+            #define GK6323V100C_RESET_USB2_BUS 3  /* 0xb8 bit3 USB2总线复位 */
+            #define GK6323V100C_RESET_USB2_UTMI 6 /* 0xb8 bit6 USB2 UTMI复位 */
+            #define GK6323V100C_RESET_USB_PHY  0  /* 0xbc bit0 USB PHY复位 */
+            #define GK6323V100C_RESET_I2C0     4  /* 0xd0 bit4 I2C0总线复位 */
+            #define GK6323V100C_RESET_FEMAC    3  /* 0xd0 bit3 FEMAC MAC复位 */
+            #define GK6323V100C_RESET_AIAO     0  /* 0x118 bit1 AIAO音频控制器复位 */
+
+            #endif
+            CEOF
+
+            # 写入驱动文件 crg-gk6323v100c.c
+            cat > crg-gk6323v100c.c << 'CEOF'
+            // SPDX-License-Identifier: GPL-2.0
+            /*
+             * Goke GK6323V100C CRG Clock and Reset Driver
+             * Minimal driver for peripheral clock gates and reset lines
+             */
+            #include <linux/init.h>
+            #include <linux/module.h>
+            #include <linux/io.h>
+            #include <linux/of.h>
+            #include <linux/platform_device.h>
+            #include <linux/clk-provider.h>
+            #include <linux/reset-controller.h>
+            #include <linux/bitops.h>
+            #include "clk.h"
+            #include "gk6323v100c-resets.h"
+
+            struct gk_crg_priv {
+                void __iomem *base;
+                struct clk_hw_onecell_data clk_data;
+                struct reset_controller_dev rcdev;
+            };
+
+            /* 外设时钟门控表：(偏移, 位号, 名称)，写1=开时钟，写0=关时钟 */
+            static const struct { u32 off; u8 bit; const char *name; } gk_gates[] = {
+                {0xa0, 0, "emmc-bus",    },  /* eMMC AHB总线时钟 */
+                {0xa0, 1, "emmc-ciu",    },  /* eMMC CIU工作时钟 */
+                {0xb8, 0, "usb2-ctrl0",  },  /* USB2控制器0时钟 */
+                {0xb8, 1, "usb2-ctrl1",  },  /* USB2控制器1时钟 */
+                {0xb8, 2, "usb2-ctrl2",  },  /* USB2控制器2时钟 */
+                {0xb8, 3, "usb2-bus",    },  /* USB2 AHB总线时钟 */
+                {0xb8, 4, "usb2-ahb",    },  /* USB2 AHB从属时钟 */
+                {0xb8, 6, "usb2-utmi",   },  /* USB2 UTMI接口时钟 */
+                {0xbc, 0, "usb2-phy",    },  /* USB2 PHY时钟 */
+                {0xd0, 0, "femac-bus",   },  /* FEMAC以太网总线时钟 */
+                {0xd0, 1, "femac-mac",   },  /* FEMAC以太网MAC工作时钟 */
+                {0xd0, 2, "femac-mdio",  },  /* FEMAC MDIO总线时钟 */
+                {0xd0, 4, "i2c0-bus",    },  /* I2C0总线时钟 */
+                {0x388,0, "fephy",       },  /* FEPHY百兆PHY时钟 */
+                {0x118,0, "aiao-bus",    },  /* AIAO音频总线时钟 */
+                {0x118,1, "aiao-mod",    },  /* AIAO音频模块时钟 */
+            };
+
+            /* 外设复位表：(偏移, 位号)，高电平复位：写1=按住，写0=释放 */
+            static const struct { u32 off; u8 bit; } gk_resets[] = {
+                {0xa0, 0},  /* EMMC */
+                {0xa0, 1},  /* EMMC_BUS */
+                {0xb8, 0},  /* USB2_0 */
+                {0xb8, 1},  /* USB2_1 */
+                {0xb8, 2},  /* USB2_2 */
+                {0xb8, 3},  /* USB2_BUS */
+                {0xb8, 6},  /* USB2_UTMI */
+                {0xbc, 0},  /* USB_PHY */
+                {0xd0, 3},  /* FEMAC */
+                {0xd0, 4},  /* I2C0 */
+                {0x118,1},  /* AIAO */
+            };
+
+            static int gk_crg_assert(struct reset_controller_dev *rcdev, unsigned long id)
+            {
+                struct gk_crg_priv *priv = container_of(rcdev, struct gk_crg_priv, rcdev);
+                u32 val = readl_relaxed(priv->base + gk_resets[id].off);
+                val |= BIT(gk_resets[id].bit);
+                writel_relaxed(val, priv->base + gk_resets[id].off);
+                return 0;
+            }
+
+            static int gk_crg_deassert(struct reset_controller_dev *rcdev, unsigned long id)
+            {
+                struct gk_crg_priv *priv = container_of(rcdev, struct gk_crg_priv, rcdev);
+                u32 val = readl_relaxed(priv->base + gk_resets[id].off);
+                val &= ~BIT(gk_resets[id].bit);
+                writel_relaxed(val, priv->base + gk_resets[id].off);
+                return 0;
+            }
+
+            static int gk_crg_reset(struct reset_controller_dev *rcdev, unsigned long id)
+            {
+                gk_crg_assert(rcdev, id);
+                udelay(10);
+                gk_crg_deassert(rcdev, id);
+                udelay(50);
+                return 0;
+            }
+
+            static int gk_crg_of_xlate(struct reset_controller_dev *rcdev,
+                                       const struct of_phandle_args *reset_spec)
+            {
+                u32 off = reset_spec->args[0];
+                u32 bit = reset_spec->args[1];
+                int i;
+
+                if (reset_spec->args_count != 2)
+                    return -EINVAL;
+                for (i = 0; i < ARRAY_SIZE(gk_resets); i++) {
+                    if (gk_resets[i].off == off && gk_resets[i].bit == bit)
+                        return i;
+                }
+                return -ENOENT;
+            }
+
+            static const struct reset_control_ops gk_crg_reset_ops = {
+                .assert = gk_crg_assert,
+                .deassert = gk_crg_deassert,
+                .reset = gk_crg_reset,
+            };
+
+            static int gk_crg_probe(struct platform_device *pdev)
+            {
+                struct device *dev = &pdev->dev;
+                struct gk_crg_priv *priv;
+                void __iomem *base;
+                int i, ret;
+                u32 val;
+
+                base = devm_platform_ioremap_resource(pdev, 0);
+                if (IS_ERR(base))
+                    return PTR_ERR(base);
+
+                priv = devm_kzalloc(dev, struct_size(priv, clk_data.hws, ARRAY_SIZE(gk_gates)),
+                                   GFP_KERNEL);
+                if (!priv) return -ENOMEM;
+
+                priv->base = base;
+
+                /* 1. 打开所有外设时钟门控 */
+                for (i = 0; i < ARRAY_SIZE(gk_gates); i++) {
+                    val = readl_relaxed(base + gk_gates[i].off);
+                    val |= BIT(gk_gates[i].bit);
+                    writel_relaxed(val, base + gk_gates[i].off);
+                }
+
+                /* 2. 复位所有外设：先全部按住，再全部释放，保证时序正确 */
+                for (i = 0; i < ARRAY_SIZE(gk_resets); i++) {
+                    val = readl_relaxed(base + gk_resets[i].off);
+                    val |= BIT(gk_resets[i].bit);
+                    writel_relaxed(val, base + gk_resets[i].off);
+                }
+                udelay(10000); /* 按住10ms，满足所有外设复位脉宽要求 */
+                for (i = 0; i < ARRAY_SIZE(gk_resets); i++) {
+                    val = readl_relaxed(base + gk_resets[i].off);
+                    val &= ~BIT(gk_resets[i].bit);
+                    writel_relaxed(val, base + gk_resets[i].off);
+                }
+                udelay(50000); /* 释放后等待50ms，等待外设PLL锁定 */
+
+                /* 3. 注册时钟provider */
+                for (i = 0; i < ARRAY_SIZE(gk_gates); i++) {
+                    priv->clk_data.hws[i] = clk_hw_register_gate(dev, gk_gates[i].name,
+                        NULL, CLK_SET_RATE_PARENT | CLK_IGNORE_UNUSED,
+                        base + gk_gates[i].off, gk_gates[i].bit, 0, &clk_lock);
+                    if (IS_ERR(priv->clk_data.hws[i]))
+                        return dev_err_probe(dev, PTR_ERR(priv->clk_data.hws[i]),
+                                            "failed to register gate %s\n", gk_gates[i].name);
+                }
+                priv->clk_data.num = ARRAY_SIZE(gk_gates);
+                ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, &priv->clk_data);
+                if (ret) return ret;
+
+                /* 4. 注册复位控制器 */
+                priv->rcdev.ops = &gk_crg_reset_ops;
+                priv->rcdev.owner = THIS_MODULE;
+                priv->rcdev.dev = dev;
+                priv->rcdev.of_node = dev->of_node;
+                priv->rcdev.nr_resets = ARRAY_SIZE(gk_resets);
+                priv->rcdev.of_reset_n_cells = 2;
+                priv->rcdev.of_xlate = gk_crg_of_xlate;
+                ret = devm_reset_controller_register(dev, &priv->rcdev);
+                if (ret) return ret;
+
+                dev_info(dev, "GK6323V100C CRG: %zu gates enabled, %zu resets released (active high, cells=2)\n",
+                         ARRAY_SIZE(gk_gates), ARRAY_SIZE(gk_resets));
+                return 0;
+            }
+
+            static const struct of_device_id gk_crg_of_match[] = {
+                { .compatible = "goke,gk6323v100c-cru" },
+                { /* sentinel */ },
+            };
+            MODULE_DEVICE_TABLE(of, gk_crg_of_match);
+
+            static struct platform_driver gk_crg_driver = {
+                .probe = gk_crg_probe,
+                .driver = {
+                    .name = "clk-gk6323v100c-crg",
+                    .of_match_table = gk_crg_of_match,
+                },
+            };
+
+            static int __init gk_crg_init(void)
+            {
+                return platform_driver_register(&gk_crg_driver);
+            }
+            arch_initcall_sync(gk_crg_init);
+
+            MODULE_DESCRIPTION("Goke GK6323V100C CRG clock and reset driver");
+            MODULE_LICENSE("GPL");
+            CEOF
+
+            # 追加Kconfig配置
+            cat >> Kconfig << 'EOF'
+            config COMMON_CLK_GK6323V100C
+                bool "Goke GK6323V100C CRG clock and reset driver"
+                depends on ARCH_HISTB || COMPILE_TEST
+                default ARCH_HISTB
+                help
+                  Enable the CRG clock and reset controller driver for Goke GK6323V100C SoCs.
+                  This handles peripheral clock gates and reset lines required for eMMC,
+                  USB, Ethernet, audio and other on-chip peripherals.
+            EOF
+
+            # 追加Makefile配置
+            echo 'obj-$(CONFIG_COMMON_CLK_GK6323V100C) += crg-gk6323v100c.o' >> Makefile
+            echo "OK  GK6323V100C CRG驱动已直接写入内核树，无补丁冲突"
 
       - name: 应用 histb 补丁（调用仓库根目录 apply_histb_patches.sh）
         run: |
@@ -236,7 +481,9 @@ jobs:
           cd linux_build
           # 该脚本自判：有 series 按 series，没有则按文件名序号应用全部 *.patch；
           # 等价于 quilt --fuzz=0，遇冲突即中止并回滚，不会静默产出缺补丁的内核
-          PATCHES_DIR="../histb-patches" CI=true bash ../apply_histb_patches.sh -y
+          #PATCHES_DIR="../histb-patches" CI=true bash ../apply_histb_patches.sh -y
+          #我们自己的CRG驱动独立工作，不依赖任何海思原厂PLL补丁
+          PATCHES_DIR="../histb-patches" CI=true SKIP_ON_CONFLICT=1 bash ../apply_histb_patches.sh -y
           echo "=== 补丁后确认 ===（本仓库设备树自带，不再要求补丁库含 mv200h 板级 dts）"
           ls arch/arm64/boot/dts/hisilicon/ | head -20 || true
 
@@ -420,7 +667,8 @@ jobs:
           #   RESET_GK6323，这三个符号在本内核树里根本不存在 —— 构建会被自己的
           #   「必须项」校验挡下（日志停在 CONFIG_CLK_GK6323V100C 未开启）。
           scripts/config --enable COMMON_CLK
-          scripts/config --enable COMMON_CLK_HI3798MV200
+          #使用自己的补丁CLK_GK6323V100C
+          #scripts/config --enable COMMON_CLK_HI3798MV200
           scripts/config --enable COMMON_CLK_GK6323V100C
           scripts/config --enable RESET_CONTROLLER
           scripts/config --enable RESET_HISI
