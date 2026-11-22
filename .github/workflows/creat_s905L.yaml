@@ -56,13 +56,13 @@ jobs:
           # Fetch latest S905X (GXL) Armbian image URL from ophub releases
           IMG_URL=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905x_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
           
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+          if [ -z "$IMG_URL" ] || [ "$IMG_URL" = "null" ]; then
             echo "错误：未能获取到 Armbian S905X 基础镜像下载链接！"
             exit 1
           fi
           
-          echo "正在下载基础镜像: $DOWNLOAD_URL"
-          curl -L "$DOWNLOAD_URL" -o base_armbian.img.gz
+          echo "正在下载基础镜像: $IMG_URL"
+          curl -L "$IMG_URL" -o base_armbian.img.gz
           
           echo "正在解压基础镜像..."
           gunzip -c base_armbian.img.gz > armbian_s905_p212.img
