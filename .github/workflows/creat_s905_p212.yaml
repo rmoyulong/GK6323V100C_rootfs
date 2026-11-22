@@ -47,11 +47,28 @@ jobs:
         run: |
           mkdir -p armbian_build
           cd armbian_build  
+         
           # Fetch latest S905X (GXL) Armbian image URL from ophub releases
-          IMG_URL=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905lb-r3300l_trixie_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
-          echo "Downloading: $IMG_URL"
-          curl -L -o base_armbian.img.gz "$IMG_URL"
-          gunzip base_armbian.img.gz
+            IMG_URL=$(curl -sL "https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=10" \
+              | jq -r '.[] 
+                | select(.tag_name | test("trixie"; "i")) 
+                | .assets[] 
+                | select(.name | test("Armbian_.*_amlogic_s905lb-r3300l_trixie_.*\\.img\\.gz$")) 
+                | .browser_download_url' \
+              | head -n 1)
+              
+            echo $IMG_URL
+          
+          if [ -z "$IMG_URL" ] || [ "$IMG_URL" = "null" ]; then
+            echo "错误：未能获取到 Armbian s905lb-r3300l 基础镜像下载链接！"
+            exit 1
+          fi
+          
+          echo "正在下载基础镜像: $IMG_URL"
+          curl -L "$IMG_URL" -o base_armbian.img.gz 
+          
+          echo "正在解压基础镜像..."
+          gunzip -c base_armbian.img.gz > base_armbian.img          
 
       - name: Inject P212 Mainline U-Boot and Configure DTB
         run: |
