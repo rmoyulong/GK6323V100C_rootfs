@@ -137,11 +137,11 @@ jobs:
           EOF
 
           # 合并 S905X 内核模块与固件
-          #sudo mkdir -p /mnt/target_rootfs/lib
-          #if [ -d /tmp/s905_kernel_backup/modules ]; then
-            #sudo rm -rf /mnt/target_rootfs/lib/modules
-            #sudo cp -a /tmp/s905_kernel_backup/modules /mnt/target_rootfs/lib/
-          #fi
+          sudo mkdir -p /mnt/target_rootfs/lib
+          if [ -d /tmp/s905_kernel_backup/modules ]; then
+            sudo rm -rf /mnt/target_rootfs/lib/modules
+            sudo cp -a /tmp/s905_kernel_backup/modules /mnt/target_rootfs/lib/
+          fi
           #if [ -d /tmp/s905_kernel_backup/firmware ]; then
             #sudo mkdir -p /mnt/target_rootfs/lib/firmware
             #sudo cp -rn /tmp/s905_kernel_backup/firmware/* /mnt/target_rootfs/lib/firmware/ 2>/dev/null || true
