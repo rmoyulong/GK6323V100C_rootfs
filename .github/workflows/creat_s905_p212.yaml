@@ -46,9 +46,9 @@ jobs:
       - name: Download Latest Armbian S905X Base Image
         run: |
           mkdir -p armbian_build
-          cd armbian_build
+          cd armbian_build  
           # Fetch latest S905X (GXL) Armbian image URL from ophub releases
-          IMG_URL=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905lb-r3300l_trixie_*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
+          IMG_URL=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905lb-r3300l_trixie_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
           echo "Downloading: $IMG_URL"
           curl -L -o base_armbian.img.gz "$IMG_URL"
           gunzip base_armbian.img.gz
