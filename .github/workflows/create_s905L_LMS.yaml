@@ -297,7 +297,7 @@ jobs:
           sudo umount -lf /mnt/armbian_root/dev
           sudo umount -lf /mnt/armbian_root/sys
           sudo umount -lf /mnt/armbian_root/proc
-          sudo rm -f /mnt/armbian_root/usr/bin/qemu-aarch64-static
+          sudo rm -f /mnt/armbian_root/usr/bin/qemu-aarch64
           sudo rm -f /mnt/armbian_root/etc/resolv.conf
           if [ -e /mnt/armbian_root/etc/resolv.conf.bak ] || [ -L /mnt/armbian_root/etc/resolv.conf.bak ]; then
             sudo mv /mnt/armbian_root/etc/resolv.conf.bak /mnt/armbian_root/etc/resolv.conf
