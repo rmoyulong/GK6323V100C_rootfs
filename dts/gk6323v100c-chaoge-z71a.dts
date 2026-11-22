@@ -288,6 +288,12 @@
 			hisilicon,phy-reset-delays-us = <10000 10000 500000>;
 			phy-mode = "mii";
 			phy-handle = <&fephy>;
+			/*
+			 * 真实 MAC 是出厂值，U-Boot 启动时会从 deviceinfo 分区读出并打印
+			 * （串口可见 mac:06:3B:82:1D:A2:43）。hisi_femac 读本级 mac-address，
+			 * 没有或全零就回退随机地址 —— 写进来即可固定，不再每次开机变化。
+			 */
+			mac-address = [06 3B 82 1D A2 43];
 		};
 
 		mdio@f9c31100 {
