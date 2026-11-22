@@ -45,24 +45,20 @@ jobs:
           ./build-fip.sh p201 ../u-boot/u-boot.bin ../fip_output
           ls -lh ../fip_output/
 
-      - name: Download Latest S905 Armbian Image & Inject Mainline U-Boot
+      - name: Download Latest Armbian S905X Base Image
         run: |
           mkdir -p work_img
           cd work_img
-
-          # 获取 ophub/amlogic-s9xxx-armbian 最新发布的 s905 镜像链接
-          DOWNLOAD_URL=$(curl -s https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest \
-            | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905_.*\\.img\\.gz$")) | .browser_download_url' \
-            | head -n 1)
-
-          if [ -z "$DOWNLOAD_URL" ]; then
-            echo "Failed to find S905 Armbian image URL"
-            exit 1
-          fi
-
-          echo "Downloading: $DOWNLOAD_URL"
-          curl -L -o base_armbian.img.gz "$DOWNLOAD_URL"
+          # Fetch latest S905X (GXL) Armbian image URL from ophub releases
+          IMG_URL=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
+          echo "Downloading: $IMG_URL"
+          curl -L -o base_armbian.img.gz "$IMG_URL"
           gunzip base_armbian.img.gz
+          
+      - name: Inject P212 Mainline U-Boot and Configure DTB
+        run: |
+          mkdir -p work_img
+          cd work_img
 
           # 写入自制主线 U-Boot（保留前 442 字节 MBR 引导代码与分区表）
           dd if=../fip_output/u-boot.bin.sd.bin of=base_armbian.img conv=fsync,notrunc bs=1 count=442
