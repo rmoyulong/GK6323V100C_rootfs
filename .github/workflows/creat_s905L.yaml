@@ -49,26 +49,29 @@ jobs:
           cd ..
           ls -lh fip_output/u-boot.bin.sd.bin
 
-      - name: 下载 Armbian S905X 基础镜像、注入 U-Boot 并预修复 ext4 根分区
+      - name: 下载 Armbian S905X 基础镜像
         run: |
-          set -e
-          mkdir -p work && cd work
-
-          echo "正在查询最新的 ophub amlogic-s9xxx-armbian 发布版本..."
-          RELEASE_JSON=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest)
-          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | startswith("Armbian_") and contains("_amlogic_s905x_") and endswith(".img.gz")) | .browser_download_url' | head -n 1)
-
+          mkdir -p work_img
+          cd work_img
+          # Fetch latest S905X (GXL) Armbian image URL from ophub releases
+          IMG_URL=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905x_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
+          
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
             echo "错误：未能获取到 Armbian S905X 基础镜像下载链接！"
             exit 1
           fi
-
+          
           echo "正在下载基础镜像: $DOWNLOAD_URL"
           curl -L "$DOWNLOAD_URL" -o base_armbian.img.gz
-
+          
           echo "正在解压基础镜像..."
           gunzip -c base_armbian.img.gz > armbian_s905_p212.img
-
+          
+      - name: 注入 U-Boot 并预修复 ext4 根分区
+        run: |
+          set -e
+          cd work_img
+          
           echo "正在向镜像写入 792MHz 混合主线 U-Boot（保留 MBR 分区表）..."
           dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=1 count=442
           dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=512 skip=1 seek=1
