@@ -9,11 +9,11 @@
  *      新增的驱动认的 "goke,gk6323v100c-crg"，只提供 #reset-cells = <2>
  *      （寄存器偏移, 位号）。该驱动在 probe 时直接把 eMMC / USB2 / FEMAC
  *      三组时钟门控写开、软复位放开；
- *   2) femac 节点补上 resets = <&cru 0xcc 3>; reset-names = "mac";
+ *   2) femac 节点补上 resets = <&cru 0xd0 3>, <&cru 0x388 4>;
+ *      reset-names = "mac", "phy";
  *      —— hisi_femac 驱动对 "mac" 复位是强制要求，缺了它 probe 直接失败
- *      （真机日志里那条 hisi-femac ... failed with error -2 就是它）；
- *      只给 "mac"，不给 "phy"：给了 "phy" 之后驱动会去读
- *      hisilicon,phy-reset-* 延时属性，属性不存在会让 probe 直接失败。
+ *      （真机日志里那条 hisi-femac ... failed with error -2 就是它），
+ *      并在 "phy" 复位上按 hisilicon,phy-reset-delays-us 做完整 PHY 复位；
  *   3) 补回 vdp@7f000000 保留区（16MB）：U-Boot 把开机 logo 的帧缓冲放在
  *      0x7f511000，内核若把这块当普通内存分配会立刻盖掉画面（花屏）。
  *
@@ -261,34 +261,33 @@
 		};
 
 		/*
-		 * 板载百兆网口：PHY 挂在下面的 mdio 总线上，地址 2。
+		 * 板载百兆网口（内置 FE PHY，100M），按真机执行记录修正三处：
 		 *
-		 * resets 只声明 "mac" = PERI_CRG51_GSF @ 0xcc bit3 —— hisi_femac 对它是
-		 * 强制要求，缺了 probe 直接 -ENOENT（日志里那条 error -2 就是它）。
-		 *
-		 * 有意不声明 "phy"（0x388 bit4）：真机原厂设备树里网卡节点完全没有
-		 * resets，PHY 一直保持 U-Boot 交棒时的状态，原厂内核在同一位置读到
-		 * 的 PHY ID 是 0x20669906（原厂 TTL: "phy_id=0x20669906"）。我们一旦
-		 * 给它声明 "phy"，驱动就会对 0x388 bit4 做一次「断言→延时→释放」，
-		 * 之后 PHY ID 读回 0x00000000 —— MDIO 上地址 2 认得到，但 PHY 芯片
-		 * 不响应（能力寄存器全读不出，ethtool 显示 Supported link modes:
-		 * Not reported、Supports auto-negotiation: No）。这颗是内置 FEPHY，
-		 * bit4 的语义未必与 mv200 相同，在拿到 GK6323 的确切位定义前不去碰它。
-		 *
-		 * phy_rst 在驱动里是可选的（if (priv->phy_rst)），不声明 "phy" 就整段
-		 * 跳过 hisi_femac_phy_reset。hisilicon,phy-reset-delays-us 保留不动：
-		 * 驱动只在 phy_rst 存在时才读它，留着不会报错，也方便以后恢复。
+		 *   1) PHY 的 MDIO 地址是 1，不是 2。原厂 U-Boot 变量 phy_addr=2,1 和
+		 *      串口那句 "Eth up port phy at 0x02" 都会被读成地址 2，但真正写进
+		 *      perictrl 0xf8a20118 低 5 位的值是 1，硬件也只在地址 1 上应答
+		 *      —— 地址写成 2 时 MDIO 读到全 0（phy_id=0x00000000）。
+		 *   2) "mac" 软复位在 CRG 0xd0 bit3，不是 0xcc bit3。hisi_femac 对
+		 *      "mac" 是强制要求，缺了 probe 直接 -ENOENT。
+		 *   3) FEPHY 的时钟/复位都在 CRG 0x388：bit0 是时钟、bit4 是复位。
+		 *      主线 hi3798mv200 的 femac 节点写的是
+		 *        resets = <&crg 0xd0 3>, <&crg 0x388 4>;
+		 *        reset-names = "mac", "phy";
+		 *      hisi_femac 只在取名 "phy" 的复位上做一次完整 PHY 复位
+		 *      （按 hisilicon,phy-reset-delays-us 的 10ms/10ms/500ms），
+		 *      并在复位前后关闭、重开 MAC 侧时钟。此前这里只给了 "mac"，
+		 *      PHY 从未被正统复位过，自协商因此停在 10Mbps/Half。照主线补齐。
 		 */
 		femac: ethernet@f9c30000 {
 			compatible = "hisilicon,hisi-femac-v2";
 			reg = <0xf9c30000 0x1000>, <0xf9c31300 0x300>;
 			interrupts = <0 72 4>;
 			clocks = <&clk_75m>;
-			resets = <&cru 0xcc 3>;
-			reset-names = "mac";
+			resets = <&cru 0xd0 3>, <&cru 0x388 4>;
+			reset-names = "mac", "phy";
 			hisilicon,phy-reset-delays-us = <10000 10000 500000>;
 			phy-mode = "mii";
-			phy-handle = <&phy2>;
+			phy-handle = <&fephy>;
 		};
 
 		mdio@f9c31100 {
@@ -298,8 +297,9 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 
-			phy2: ethernet-phy@2 {
-				reg = <0x2>;
+			fephy: ethernet-phy@1 {
+				reg = <0x1>;
+				#phy-cells = <0>;
 			};
 		};
 
