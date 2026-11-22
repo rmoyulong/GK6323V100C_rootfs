@@ -81,18 +81,38 @@ jobs:
           set -e
           cd work_img
           
-          # 1. 计算容量（解压大小 + 500MB）
-          P2_START_SECTOR=$(parted -ms armbian_s905_p212.img unit s print | awk -F: '$1=="2"{gsub(/s/,"",$2); print $2}')
-          CURRENT_P2_MB=$(parted -ms armbian_s905_p212.img unit MB print | awk -F: '$1=="2"{gsub(/MB/,"",$4); printf "%.0f", $4}')
+            ###############给p2扩容500M开始######################################
+            IMG=armbian_s905_p212.img
+            GROW_MB=500          # 在现有 P2 基础上额外增加的容量
+            ALIGN_MB=20          # 额外余量，避免边界问题
 
-          EXTRA_BYTES=500
-          if [ "$CURRENT_P2_MB" -lt "$EXTRA_BYTES" ]; then
-            ADD_MB=$((EXTRA_BYTES - CURRENT_P2_MB + 20))
-            echo "正在扩容镜像 (+${ADD_MB}MB)..."
-            dd if=/dev/zero bs=1M count="$ADD_MB" >> armbian_s905_p212.img
-            sudo parted -s armbian_s905_p212.img rm 2
-            sudo parted -s armbian_s905_p212.img unit s mkpart primary ext4 "${P2_START_SECTOR}s" 100%
-          fi
+            # P2 起始扇区（单位 s）
+            P2_START_SECTOR=$(parted -ms "$IMG" unit s print | awk -F: '$1=="2"{gsub(/s/,"",$2); print $2}')
+
+            # P2 当前大小（单位 MB，四舍五入）
+            CURRENT_P2_MB=$(parted -ms "$IMG" unit MB print | awk -F: '$1=="2"{gsub(/MB/,"",$4); printf "%.0f", $4}')
+
+            if [ -z "$P2_START_SECTOR" ] || [ -z "$CURRENT_P2_MB" ]; then
+              echo "无法解析 P2 分区信息，请检查镜像分区表" >&2
+              exit 1
+            fi
+
+            # 需要追加到文件尾的 MB 数 = 目标增量 + 对齐余量
+            ADD_MB=$((GROW_MB + ALIGN_MB))
+            TARGET_P2_MB=$((CURRENT_P2_MB + GROW_MB))
+
+            echo "P2 当前 ${CURRENT_P2_MB}MB，目标 ${TARGET_P2_MB}MB，文件追加 ${ADD_MB}MB..."
+
+            dd if=/dev/zero bs=1M count="$ADD_MB" status=none >> "$IMG"
+
+            # GPT 镜像：把备份头移到文件尾；MBR 可注释掉
+            sudo sgdisk -e "$IMG" >/dev/null 2>&1 || true
+
+            sudo parted -s "$IMG" rm 2
+            sudo parted -s "$IMG" unit s mkpart primary ext4 "${P2_START_SECTOR}s" 100%
+
+            echo "P2 已扩容到约 ${TARGET_P2_MB}MB（文件实际追加 ${ADD_MB}MB，含 ${ALIGN_MB}MB 余量）"
+            ###############给p2扩容500M结束######################################
           
           #############################################          
           
@@ -104,10 +124,38 @@ jobs:
           LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
 
           # 提前修复 ext4 块位图与 inode 校验和，禁用延迟初始化
-          echo "正在对 ROOT 分区 (${LOOP_DEV}p2) 执行 e2fsck 预校验与修复..."
-          sudo e2fsck -fy "${LOOP_DEV}p2" || true
-          sudo tune2fs -O ^metadata_csum_seed "${LOOP_DEV}p2" 2>/dev/null || true
-          sudo e2fsck -fy "${LOOP_DEV}p2"
+            echo "正在关联循环设备并检查修复分区..."
+            LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
+            sudo partprobe "$LOOP_DEV" 2>/dev/null || true
+            sleep 1
+
+            if [ ! -b "${LOOP_DEV}p2" ]; then
+              echo "未找到 ${LOOP_DEV}p2，分区扫描失败" >&2
+              sudo losetup -d "$LOOP_DEV"
+              exit 1
+            fi
+
+            echo "正在对 ROOT 分区 (${LOOP_DEV}p2) 执行 e2fsck 预校验与修复..."
+            sudo e2fsck -fy "${LOOP_DEV}p2" || rc=$?
+            if [ "${rc:-0}" -gt 2 ]; then
+              echo "e2fsck 返回 ${rc}，存在未修复错误" >&2
+              sudo losetup -d "$LOOP_DEV"
+              exit 1
+            fi
+
+            sudo tune2fs -O ^metadata_csum_seed "${LOOP_DEV}p2" 2>/dev/null || true
+            sudo e2fsck -fy "${LOOP_DEV}p2" || rc=$?
+            if [ "${rc:-0}" -gt 2 ]; then
+              echo "e2fsck 第二次返回 ${rc}，存在未修复错误" >&2
+              sudo losetup -d "$LOOP_DEV"
+              exit 1
+            fi
+
+            echo "分区大小: $(sudo blockdev --getsize64 "${LOOP_DEV}p2") bytes"
+            sudo resize2fs "${LOOP_DEV}p2"
+
+            sync
+            sudo losetup -d "$LOOP_DEV"
 
           # ================= 新增部分：挂载 ROOT 分区并安装软件 =================
           echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite 和 wsdd2..."
@@ -175,6 +223,7 @@ jobs:
               
               # 复制配置
               sudo mkdir -p "/etc/samba"
+              sudo mkdir -p "/root"
               sudo cp ${{ github.workspace }}/patch/smb.conf /etc/samba/smb.conf
               sudo cp ${{ github.workspace }}/patch/.bashrc /mnt/rootfs/root/.bashrc
               sudo chmod 0644 /mnt/rootfs/root/.bashrc
@@ -286,6 +335,10 @@ jobs:
               sudo mkdir -p "/var/lib/squeezeboxserver/prefs/plugin"
               sudo tar zxvfp "./golang/plugins.tar.gz"
               rm -rf ./golang
+              
+              # ---------- 4) 设置samba config ----------
+              sudo mkdir -p "/etc/samba"
+              sudo cp ${{ github.workspace }}/patch/smb.conf /etc/samba/smb.conf
           
             systemctl enable smbd lyrionmusicserver || true
             apt-get clean
