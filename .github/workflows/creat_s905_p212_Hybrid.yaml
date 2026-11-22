@@ -1,10 +1,11 @@
-name: 构建北京联通Q5Armbian S905 P212 (GXL 792MHz Hybrid)TF/SD卡启动镜像
+name: 构建北京联通Q5 Armbian S905 P212 (GXL 792MHz Hybrid)TF/SD卡启动镜像
 
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 's905_p212_Hybrid'
+    branches: [ master, main ]
+    paths:
+      - '.github/workflows/creat_s905_p212_Hybrid.yml'
 
 permissions:
   contents: write
@@ -88,8 +89,10 @@ jobs:
           tag_name: s905_p212_Hybrid
           name: "Armbian S905 P212 (GXL 792MHz Hybrid U-Boot)-北京联通Q5"
           body: |
-            Automated build of Armbian for Amlogic GXL (S905X / S905L / S905M2) with 792MHz DDR3 BL2 + Generic P212 Mainline U-Boot.
+            自动构建的 Amlogic GXL (S905X / S905L / S905M2) 适用 792MHz DDR3 BL2 + 普通 P212 主线 U-Boot 独立引导.
 
+            适用于内置 eMMC/NAND 损坏的 Amlogic GXL 系列盒子，直接从外置 TF 卡冷启动主线 Armbian。
+            
             ### TF 卡刷写步骤（Debian / Linux 终端，请务必确认目标设备为 `/dev/sda`）
             ```bash
             # 1. 先将 Armbian 镜像写入 TF 卡

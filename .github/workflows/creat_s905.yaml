@@ -1,10 +1,11 @@
-name: 构建江苏联通Armbian S905 P201 TF/SD卡启动镜像
+name: 构建江苏联通Q5 Armbian S905/S905M (GXBB P201)TF/SD卡启动镜像
 
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 's905_p201'
+    branches: [ master, main ]
+    paths:
+      - '.github/workflows/creat_s905.yml'
 
 permissions:
   contents: write
@@ -96,7 +97,9 @@ jobs:
           tag_name: s905_p201
           name: "Armbian S905 P201 Mainline U-Boot Build-江苏联通Q5"
           body: |
-            自动构建的 Amlogic S905 / S905M (GXBB P201) 主线 U-Boot 固件与 Armbian 镜像。
+            自动构建的 Amlogic S905 / S905M (GXBB P201) 主线 U-Boot 固件与 Armbian 镜像。           
+
+            适用于内置 eMMC/NAND 损坏的 Amlogic GXBB 系列盒子，直接从外置 TF 卡冷启动主线 Armbian。
 
             ### TF 卡刷写说明
             ```bash

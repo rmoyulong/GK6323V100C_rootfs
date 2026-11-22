@@ -1,10 +1,11 @@
-name: Build Armbian S905 P212 (GXL) Image
+name: 构建北京联通Q7 Armbian S905  (GXL P212)TF/SD卡启动镜像
 
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 's905_p212'
+    branches: [ master, main ]
+    paths:
+      - '.github/workflows/creat_s905_p212.yml'
 
 permissions:
   contents: write
@@ -85,9 +86,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: s905_p212
-          name: "Armbian S905 P212 (GXL) Mainline U-Boot Build"
+          name: "Armbian S905 P212 (GXL) Mainline U-Boot Build -北京联通Q7"
           body: |
-            ### Amlogic GXL (P212 / S905X / S905L) 主线 U-Boot 独立引导镜像
+            ### Amlogic GXL (P212 / S905X / S905L) 主线 U-Boot 独立引导镜像-北京联通Q7
 
             适用于内置 eMMC/NAND 损坏的 Amlogic GXL 系列盒子，直接从外置 TF 卡冷启动主线 Armbian。
 
