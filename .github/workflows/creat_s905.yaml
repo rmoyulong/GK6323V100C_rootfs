@@ -66,6 +66,13 @@ jobs:
 
           # 挂载 BOOT 分区并将默认设备树修改为 meson-gxbb-p201.dtb
           LOOP_DEV=$(sudo losetup --show -fP base_armbian.img)
+          
+          # 在打包阶段提前修复 ext4 块位图与 inode 校验和，并禁用首次开机延迟初始化，彻底避免 ext4lazyinit 报错
+          echo "正在对 ROOT 分区 (${LOOP_DEV}p2) 执行 e2fsck 预校验与修复..."
+          sudo e2fsck -fy "${LOOP_DEV}p2" || true
+          sudo tune2fs -O ^metadata_csum_seed "${LOOP_DEV}p2" 2>/dev/null || true
+          sudo e2fsck -fy "${LOOP_DEV}p2"
+          
           mkdir -p mnt_boot
           sudo mount "${LOOP_DEV}p1" mnt_boot
 

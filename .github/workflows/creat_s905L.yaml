@@ -1,4 +1,4 @@
-name: 构建北京联通Q5  Armbian S905L/P212 (GXL 792MHz 低内存引导版) 镜像
+name: 构建北京联通Q5 Armbian S905L/P212 (GXL 792MHz 低内存引导版) 镜像
 
 on:
   workflow_dispatch:
@@ -26,7 +26,7 @@ jobs:
             git build-essential gcc-aarch64-linux-gnu \
             bison flex libssl-dev device-tree-compiler \
             python3 python3-dev swig bc u-boot-tools \
-            curl jq parted kpartx dosfstools util-linux
+            curl jq parted kpartx dosfstools e2fsprogs util-linux
 
       - name: 克隆相关源码仓库
         run: |
@@ -49,7 +49,7 @@ jobs:
           cd ..
           ls -lh fip_output/u-boot.bin.sd.bin
 
-      - name: 下载 Armbian S905X 基础镜像、注入 U-Boot 并配置低内存 extlinux.conf
+      - name: 下载 Armbian S905X 基础镜像、注入 U-Boot 并预修复 ext4 根分区
         run: |
           set -e
           mkdir -p work && cd work
@@ -73,8 +73,16 @@ jobs:
           dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=1 count=442
           dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=512 skip=1 seek=1
 
-          echo "正在挂载 BOOT 分区并配置适配 512MB 低内存的 extlinux.conf..."
+          echo "正在关联循环设备并检查修复分区..."
           LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
+
+          # 在打包阶段提前修复 ext4 块位图与 inode 校验和，并禁用首次开机延迟初始化，彻底避免 ext4lazyinit 报错
+          echo "正在对 ROOT 分区 (${LOOP_DEV}p2) 执行 e2fsck 预校验与修复..."
+          sudo e2fsck -fy "${LOOP_DEV}p2" || true
+          sudo tune2fs -O ^metadata_csum_seed "${LOOP_DEV}p2" 2>/dev/null || true
+          sudo e2fsck -fy "${LOOP_DEV}p2"
+
+          echo "正在挂载 BOOT 分区并配置适配 512MB 低内存的 extlinux.conf..."
           sudo mkdir -p /mnt/armbian_boot
           sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
 
@@ -120,11 +128,11 @@ jobs:
           tag_name: s905L_p212
           name: Armbian S905L/P212 (GXL 792MHz 低内存引导版) - 北京联通Q5
           body: |
-            针对 Amlogic GXL (S905L / P212) 的 Armbian 自动化构建，集成 792MHz DDR3 BL2 + 主线 U-Boot 2024.01 及低内存 `extlinux.conf` 引导配置。
+            针对北京联通 Q5 (Amlogic GXL S905L / P212) 的 Armbian 自动化构建，集成 792MHz DDR3 BL2 + 主线 U-Boot 2024.01、低内存 `extlinux.conf` 引导配置及 `ext4` 根分区预修复。
 
             ### TF 卡刷写说明 (Debian/Linux)
             ```bash
-            # 1. 将完整的 Armbian 镜像（已包含 U-Boot 与低内存 extlinux.conf）写入 TF 卡
+            # 1. 将完整的 Armbian 镜像（已包含 U-Boot、低内存 extlinux.conf 与预修复根分区）写入 TF 卡
             zcat Armbian_xx_s905_p212.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
 
             # 2. （可选）单独重新写入主线 U-Boot（保留 MBR 分区表）
