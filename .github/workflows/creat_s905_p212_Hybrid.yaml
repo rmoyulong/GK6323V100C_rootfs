@@ -1,4 +1,4 @@
-name: 构建北京联通Q5 Armbian S905 P212 (GXL 792MHz Hybrid)TF/SD卡启动镜像
+name: 构建北京联通Q5 Armbian S905 P212 (GXL 792MHz Hybrid)TF/SD内置卡槽启动镜像
 
 on:
   workflow_dispatch:

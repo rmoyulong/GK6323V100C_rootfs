@@ -1,4 +1,4 @@
-name: 构建北京联通Q7 Armbian S905  (GXL P212)TF/SD卡启动镜像
+name: 构建北京联通Q7 Armbian S905  (GXL P212) TF/SD内置卡槽启动镜像
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: 构建江苏联通Q5 Armbian S905/S905M (GXBB P201)TF/SD卡启动镜像
+name: 构建江苏联通Q5 Armbian S905/S905M (GXBB P201)TF/SD内置卡槽启动镜像
 
 on:
   workflow_dispatch:
