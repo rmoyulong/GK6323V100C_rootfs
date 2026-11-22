@@ -5,7 +5,7 @@ on:
   push:
     branches: [ master, main ]
     paths:
-      - '.github/workflows/creat_s905.yml'
+      - '.github/workflows/creat_s905.yaml'
 
 permissions:
   contents: write

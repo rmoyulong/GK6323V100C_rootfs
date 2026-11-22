@@ -5,6 +5,13 @@ on:
   push:
     branches: [ master, main ]
     paths:
+      - '.github/workflows/creat_s905_p212.yaml'
+  
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master, main ]
+    paths:
       - '.github/workflows/creat_s905_p212.yml'
 
 permissions:

@@ -5,7 +5,7 @@ on:
   push:
     branches: [ master, main ]
     paths:
-      - '.github/workflows/creat_s905_p212_Hybrid.yml'
+      - '.github/workflows/creat_s905_p212_Hybrid.yaml'
 
 permissions:
   contents: write
