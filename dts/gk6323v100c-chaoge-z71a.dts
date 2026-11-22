@@ -9,7 +9,7 @@
  *      新增的驱动认的 "goke,gk6323v100c-crg"，只提供 #reset-cells = <2>
  *      （寄存器偏移, 位号）。该驱动在 probe 时直接把 eMMC / USB2 / FEMAC
  *      三组时钟门控写开、软复位放开；
- *   2) femac 节点补上 resets = <&cru 0xd0 3>; reset-names = "mac";
+ *   2) femac 节点补上 resets = <&cru 0xcc 3>; reset-names = "mac";
  *      —— hisi_femac 驱动对 "mac" 复位是强制要求，缺了它 probe 直接失败
  *      （真机日志里那条 hisi-femac ... failed with error -2 就是它）；
  *      只给 "mac"，不给 "phy"：给了 "phy" 之后驱动会去读
@@ -263,7 +263,7 @@
 		/*
 		 * 板载百兆网口：PHY 挂在下面的 mdio 总线上，地址 2。
 		 *
-		 * resets 只声明 "mac" = PERI_CRG51 @ 0xd0 bit3 —— hisi_femac 对它是
+		 * resets 只声明 "mac" = PERI_CRG51_GSF @ 0xcc bit3 —— hisi_femac 对它是
 		 * 强制要求，缺了 probe 直接 -ENOENT（日志里那条 error -2 就是它）。
 		 *
 		 * 有意不声明 "phy"（0x388 bit4）：真机原厂设备树里网卡节点完全没有
@@ -284,7 +284,7 @@
 			reg = <0xf9c30000 0x1000>, <0xf9c31300 0x300>;
 			interrupts = <0 72 4>;
 			clocks = <&clk_75m>;
-			resets = <&cru 0xd0 3>;
+			resets = <&cru 0xcc 3>;
 			reset-names = "mac";
 			hisilicon,phy-reset-delays-us = <10000 10000 500000>;
 			phy-mode = "mii";
