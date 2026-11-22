@@ -26,9 +26,8 @@ jobs:
             git build-essential gcc-aarch64-linux-gnu \
             bison flex libssl-dev device-tree-compiler \
             python3 python3-dev swig bc u-boot-tools \
-            curl jq parted kpartx dosfstools e2fsprogs util-linux dos2unix  \
-            qemu-user-static binfmt-support
-
+            curl jq parted kpartx dosfstools e2fsprogs util-linux dos2unix 
+            
       - name: 克隆相关源码仓库
         run: |
           git clone --depth 1 https://github.com/hexdump0815/u-boot-misc.git
