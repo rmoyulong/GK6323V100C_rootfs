@@ -84,7 +84,7 @@ jobs:
           P2_START_SECTOR=$(parted -ms armbian_s905_p212.img unit s print | awk -F: '$1=="2"{gsub(/s/,"",$2); print $2}')
           CURRENT_P2_MB=$(parted -ms armbian_s905_p212.img unit MB print | awk -F: '$1=="2"{gsub(/MB/,"",$4); printf "%.0f", $4}')
 
-          EXTRA_BYTES=$((500 * 1024 * 1024))
+          EXTRA_BYTES=500
           if [ "$CURRENT_P2_MB" -lt "$EXTRA_BYTES" ]; then
             ADD_MB=$((EXTRA_BYTES - CURRENT_P2_MB + 20))
             echo "正在扩容镜像 (+${ADD_MB}MB)..."
