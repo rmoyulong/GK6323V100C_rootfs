@@ -45,7 +45,7 @@ jobs:
           ./build-fip.sh p201 ../u-boot/u-boot.bin ../fip_output
           ls -lh ../fip_output/
 
-      - name: Download Latest Armbian S905X Base Image
+      - name: Download Latest Armbian S905 Base Image
         run: |
           mkdir -p work_img
           cd work_img
