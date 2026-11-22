@@ -122,8 +122,8 @@ jobs:
           fi
           sudo cp /etc/resolv.conf /mnt/armbian_root/etc/resolv.conf
 
-          # 复制 aarch64 模拟器并挂载虚拟文件系统
-          sudo cp /usr/bin/qemu-aarch64-static /mnt/armbian_root/usr/bin/
+          # 复制 aarch64 模拟器 qemu-aarch64 并挂载虚拟文件系统
+          sudo cp /usr/bin/qemu-aarch64 /mnt/armbian_root/usr/bin/
           sudo mount -t proc /proc /mnt/armbian_root/proc
           sudo mount -t sysfs /sys /mnt/armbian_root/sys
           sudo mount -o bind /dev /mnt/armbian_root/dev
