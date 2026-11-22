@@ -108,27 +108,54 @@ jobs:
           sudo mkfs.ext4 -F -O ^metadata_csum_seed -L "$OLD_ROOT_LABEL" -U "$OLD_ROOT_UUID" "${LOOP_DEV}p2"
           sudo mount "${LOOP_DEV}p2" /mnt/target_rootfs
           sudo cp -a /mnt/new_rootfs_extract/. /mnt/target_rootfs/
+          
+          #替换resize.sh
+          sudo tee "/mnt/target_rootfs/etc/resize.sh" > /dev/null <<'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          
+          # ===== 你的 resize 逻辑写在这里 =====
+          chown root:root /etc/sudo.conf /etc/sudoers
+          chown -R root:root /etc/sudoers.d            
+          chown root:root /usr/bin/sudo
+          chmod 4755 /usr/bin/sudo
+            
+          esize2fs /dev/mmcblk2p2
+            
+          sudo chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
+          sudo chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
+          sudo chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
+            
+          sudo systemctl restart  lyrionmusicserver
+          # ===================================
+          
+          # 执行完毕后自毁：禁用并删除服务、删除脚本自身
+          systemctl disable resize-once.service 2>/dev/null || true
+          rm -f /etc/systemd/system/resize-once.service
+          rm -f /etc/resize.sh
+          systemctl daemon-reload
+          EOF
 
           # 合并 S905X 内核模块与固件
-          sudo mkdir -p /mnt/target_rootfs/lib
-          if [ -d /tmp/s905_kernel_backup/modules ]; then
-            sudo rm -rf /mnt/target_rootfs/lib/modules
-            sudo cp -a /tmp/s905_kernel_backup/modules /mnt/target_rootfs/lib/
-          fi
-          if [ -d /tmp/s905_kernel_backup/firmware ]; then
-            sudo mkdir -p /mnt/target_rootfs/lib/firmware
-            sudo cp -rn /tmp/s905_kernel_backup/firmware/* /mnt/target_rootfs/lib/firmware/ 2>/dev/null || true
-          fi
+          #sudo mkdir -p /mnt/target_rootfs/lib
+          #if [ -d /tmp/s905_kernel_backup/modules ]; then
+            #sudo rm -rf /mnt/target_rootfs/lib/modules
+            #sudo cp -a /tmp/s905_kernel_backup/modules /mnt/target_rootfs/lib/
+          #fi
+          #if [ -d /tmp/s905_kernel_backup/firmware ]; then
+            #sudo mkdir -p /mnt/target_rootfs/lib/firmware
+            #sudo cp -rn /tmp/s905_kernel_backup/firmware/* /mnt/target_rootfs/lib/firmware/ 2>/dev/null || true
+          #fi
 
           # 启用 Amlogic 串口终端登录 (ttyAML0)
-          sudo mkdir -p /mnt/target_rootfs/etc/systemd/system/getty.target.wants
-          if [ -f /mnt/target_rootfs/usr/lib/systemd/system/serial-getty@.service ]; then
-            sudo ln -sf /usr/lib/systemd/system/serial-getty@.service \
-              /mnt/target_rootfs/etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service
-          elif [ -f /mnt/target_rootfs/lib/systemd/system/serial-getty@.service ]; then
-            sudo ln -sf /lib/systemd/system/serial-getty@.service \
-              /mnt/target_rootfs/etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service
-          fi
+          #sudo mkdir -p /mnt/target_rootfs/etc/systemd/system/getty.target.wants
+          #if [ -f /mnt/target_rootfs/usr/lib/systemd/system/serial-getty@.service ]; then
+            #sudo ln -sf /usr/lib/systemd/system/serial-getty@.service \
+              #/mnt/target_rootfs/etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service
+          #elif [ -f /mnt/target_rootfs/lib/systemd/system/serial-getty@.service ]; then
+            #sudo ln -sf /lib/systemd/system/serial-getty@.service \
+              #/mnt/target_rootfs/etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service
+          #fi
 
           # 更新 /etc/fstab
           sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
