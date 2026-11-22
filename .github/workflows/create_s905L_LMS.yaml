@@ -54,7 +54,7 @@ jobs:
           mkdir -p work_img
           cd work_img
           # Fetch latest S905X (GXL) Armbian image URL from ophub releases
-          IMG_URL=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905x_trixie_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
+          IMG_URL=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905_trixie_*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
           
           if [ -z "$IMG_URL" ] || [ "$IMG_URL" = "null" ]; then
             echo "错误：未能获取到 Armbian S905X 基础镜像下载链接！"
