@@ -130,7 +130,7 @@ jobs:
           cat "$ROOTFS_DIR/etc/sysctl.d/99-lms-network.conf"
           
           #################建立启动后运行一次的脚本-开始################################################
-          sudo mkdir -p "$ROOTFS_DIR/systemd/system"
+          sudo mkdir -p "$ROOTFS_DIR/etc/systemd/system"
           sudo tee "$ROOTFS_DIR/etc/systemd/system/resize-once.service" > /dev/null <<'EOF'
           [Unit]
           Description=One-time resize script
