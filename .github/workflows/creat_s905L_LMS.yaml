@@ -179,7 +179,7 @@ jobs:
             ### TF 卡刷写说明 (Debian/Linux)
             ```bash
             # 1. 将完整的 Armbian 镜像（已包含 U-Boot、低内存 extlinux.conf 与预修复根分区）写入 TF 卡
-            zcat Armbian_xx_s905_p212.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
+            zcat Armbian_XX_s905_p212_trixie.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
 
             # 2. （可选）单独重新写入主线 U-Boot（保留 MBR 分区表）
             sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=1 count=442
