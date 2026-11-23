@@ -116,6 +116,7 @@ jobs:
             fi
 
             echo "正在对 ROOT 分区 (${LOOP_DEV}p2) 执行 e2fsck 预校验与修复..."
+            rc=0
             sudo e2fsck -fy "${LOOP_DEV}p2" || rc=$?
             if [ "${rc:-0}" -gt 2 ]; then
               echo "e2fsck 返回 ${rc}，存在未修复错误" >&2
@@ -124,6 +125,7 @@ jobs:
             fi
 
             sudo tune2fs -O ^metadata_csum_seed "${LOOP_DEV}p2" 2>/dev/null || true
+            rc=0
             sudo e2fsck -fy "${LOOP_DEV}p2" || rc=$?
             if [ "${rc:-0}" -gt 2 ]; then
               echo "e2fsck 第二次返回 ${rc}，存在未修复错误" >&2
@@ -142,7 +144,6 @@ jobs:
             sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
             
             # 在 chroot 内执行 默认使用bash
-            sudo chsh -s /bin/bash root
             # 或者对普通用户
             #sudo chsh -s /bin/bash squeezeboxserver
 
@@ -168,6 +169,7 @@ jobs:
             # 第一轮 chroot：基础包 + 系统配置（不涉及 samba/LMS 配置覆盖）
             sudo chroot /mnt/armbian_root /bin/bash -c "
               export DEBIAN_FRONTEND=noninteractive
+              chsh -s /bin/bash root 2>/dev/null || true
               apt-get update
               apt-get install -y --no-install-recommends dos2unix qemu-utils dosfstools dump parted bzip2 kpartx build-essential net-tools cifs-utils bind9-dnsutils ethtool screen wget curl sudo file mtools p7zip-full git nginx php8.4-cgi php8.4-fpm php8.4-mysql usbutils pciutils e2fsprogs rsync
               apt-get install -y --no-install-recommends squeezelite wsdd2 alsa-utils alsa-tools ffmpeg locales
@@ -336,58 +338,77 @@ jobs:
               rm -rf /var/lib/apt/lists/*
             "
 
-            # 清理 chroot 环境并恢复 DNS 配置
-            sudo umount -lf /mnt/armbian_root/dev/pts
-            sudo umount -lf /mnt/armbian_root/dev
-            sudo umount -lf /mnt/armbian_root/sys
-            sudo umount -lf /mnt/armbian_root/proc
+            # =====================================================================
+            # 收尾：先卸载所有绑定和根分区，再做最终 fsck，最后 dd 抓镜像
+            # =====================================================================
+            echo "正在清理 chroot 环境..."
+            sudo sync
+            sleep 2
+
+            # 按顺序卸载 bind mount，不能用 -lf 偷跑
+            sudo umount /mnt/armbian_root/dev/pts 2>/dev/null || sudo umount -lf /mnt/armbian_root/dev/pts
+            sudo umount /mnt/armbian_root/dev      2>/dev/null || sudo umount -lf /mnt/armbian_root/dev
+            sudo umount /mnt/armbian_root/sys      2>/dev/null || sudo umount -lf /mnt/armbian_root/sys
+            sudo umount /mnt/armbian_root/proc     2>/dev/null || sudo umount -lf /mnt/armbian_root/proc
+
+            # 删除 qemu 和临时文件，恢复 resolv.conf（在根分区仍挂载时做）
             sudo rm -f /mnt/armbian_root/usr/bin/qemu-aarch64
             sudo rm -f /mnt/armbian_root/etc/resolv.conf
             if [ -e /mnt/armbian_root/etc/resolv.conf.bak ] || [ -L /mnt/armbian_root/etc/resolv.conf.bak ]; then
               sudo mv /mnt/armbian_root/etc/resolv.conf.bak /mnt/armbian_root/etc/resolv.conf
             fi
-            # 删除临时 patch 目录，避免残留在镜像里
-            sudo rm -rf /mnt/armbian_root/tmp/patch            
+            sudo rm -rf /mnt/armbian_root/tmp/patch
+
             sudo sync
-            # =====================================================================
-            
+            sleep 2
+
+            # 关键：先把根分区 remount 成只读，逼所有脏页落盘并标记文件系统为 clean
+            sudo mount -o remount,ro /mnt/armbian_root || true
+            sleep 1
+            sudo umount /mnt/armbian_root
+            sleep 2
+
+            # 卸载后做一次最终 fsck：任何 journal 脏事务会被重播/丢弃，保证镜像干净
+            echo "正在对 ROOT 分区做最终 e2fsck 修复..."
+            rc=0
+            sudo e2fsck -fy "${LOOP_DEV}p2" || rc=$?
+            if [ "${rc:-0}" -gt 2 ]; then
+              echo "最终 e2fsck 返回 ${rc}，文件系统仍有错" >&2
+              sudo losetup -d "$LOOP_DEV"
+              exit 1
+            fi
+
+            # 现在文件系统是 clean 的，才 dd 抓成镜像
             rootfs_image="../rootfs.img"
-            #EXTRA_MB=100
-            #FS_BYTES=$(sudo tune2fs -l "${LOOP_DEV}p2" | awk '/Block count/{c=$3} /Block size/{s=$3} END{print c*s}')
+            echo "正在导出 clean rootfs 镜像..."
+            sudo dd if="${LOOP_DEV}p2" of="$rootfs_image" bs=1M status=progress conv=fsync
+            sudo sync
 
-            # 目标字节数 = 文件系统大小 + 300MB
-            #TARGET_BYTES=$(( FS_BYTES + EXTRA_MB * 1024 * 1024 ))
+            # 最后再对导出的镜像做一次 fsck，双保险
+            echo "正在验证导出的镜像..."
+            rc2=0
+            CHECK_LOOP=$(sudo losetup --find --show "$rootfs_image")
+            sleep 1
+            sudo e2fsck -fy "$CHECK_LOOP" || rc2=$?
+            if [ "${rc2:-0}" -gt 2 ]; then
+              echo "导出镜像 e2fsck 返回 ${rc2}，请检查" >&2
+              sudo losetup -d "$CHECK_LOOP"
+              exit 1
+            fi
+            sudo losetup -d "$CHECK_LOOP"
 
-            # dd 用 bs=1M，向上取整到 MB
-            #TARGET_MB=$(( (TARGET_BYTES + 1048575) / 1048576 ))
-            #sudo dd if=/dev/zero of="$rootfs_image" bs=1M count="$TARGET_MB"
-            #ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
-            #sudo mkfs.ext4 -U "$ROOT_UUID" -L rootfs "$rootfs_image"            
-            
-            #sudo mkdir -p /mnt/ext4_mnt
-            #sudo mount "$rootfs_image" /mnt/ext4_mnt
-            #sudo cp -rfp /mnt/armbian_root/* /mnt/ext4_mnt/
-            #sudo sync
-            #sudo umount /mnt/ext4_mnt
-            sudo dd if="${LOOP_DEV}p2" of="$rootfs_image" bs=1M status=none
-
-            # =====================================================================
-            #终止挂载
-            sudo umount /mnt/armbian_root              
+            # 释放原 loop
             sudo losetup -d "${LOOP_DEV}"
             # =====================================================================
-            
-            #BUILD_DATE=$(date +%Y.%m.%d)
-            #OUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
-            #echo "正在压缩生成最终镜像: $OUT_NAME..."
-            #gzip -c armbian_s905_p212.img > "../${OUT_NAME}"
-            
+
             OUT_NAME="rootfs.img.gz"
+            echo "正在压缩生成最终镜像: $OUT_NAME..."
             gzip -c "$rootfs_image" > "../${OUT_NAME}"
-            rm -f base_armbian.img.gz armbian_s905_p212.img
+            rm -f base_armbian.img.gz armbian_s905_p212.img "$rootfs_image"
             cd ..
             sha256sum rootfs.img.gz > sha256sums.txt
             ls -lh "${OUT_NAME}"
+
 
       - name: 发布构建产物至 gk6323v100c_rootfs 标签
         uses: softprops/action-gh-release@v2
