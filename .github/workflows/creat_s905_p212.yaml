@@ -50,15 +50,15 @@ jobs:
          
           # Fetch latest S905X (GXL) Armbian image URL from ophub releases
             #IMG_URL=$(curl -sL "https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=10" \
-            IMG_URL=$(curl -sL "https://github.com/rmoyulong/amlogic-s9xxx-armbian/releases/latest?per_page=1" \
-              | jq -r '.[] 
-                | select(.tag_name | test("trixie"; "i")) 
-                | .assets[] 
-                | select(.name | test("Armbian_.*_amlogic_s905lb-r3300l_trixie_.*\\.img\\.gz$")) 
-                | .browser_download_url' \
-              | head -n 1)
+              #| jq -r '.[] 
+                #| select(.tag_name | test("trixie"; "i")) 
+                #| .assets[] 
+                #| select(.name | test("Armbian_.*_amlogic_s905lb-r3300l_trixie_.*\\.img\\.gz$")) 
+                #| .browser_download_url' \
+              #| head -n 1)
               
-            echo $IMG_URL
+          IMG_URL=$(curl -sL https://github.com/rmoyulong/amlogic-s9xxx-armbian/releases/latest | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905lb-r3300l_trixie_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)             
+          echo $IMG_URL
           
           if [ -z "$IMG_URL" ] || [ "$IMG_URL" = "null" ]; then
             echo "错误：未能获取到 Armbian s905lb-r3300l 基础镜像下载链接！"
