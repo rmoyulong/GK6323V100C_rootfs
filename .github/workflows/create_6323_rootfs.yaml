@@ -353,10 +353,13 @@ jobs:
             sudo losetup -d "${LOOP_DEV}"
             # =====================================================================
             
-            BUILD_DATE=$(date +%Y.%m.%d)
-            OUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
-            echo "正在压缩生成最终镜像: $OUT_NAME..."
-            gzip -c armbian_s905_p212.img > "../${OUT_NAME}"
+            #BUILD_DATE=$(date +%Y.%m.%d)
+            #OUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
+            #echo "正在压缩生成最终镜像: $OUT_NAME..."
+            #gzip -c armbian_s905_p212.img > "../${OUT_NAME}"
+            
+            OUT_NAME="rootfs.img.gz"
+            gzip -c rootfs.img > "../${OUT_NAME}"
             rm -f base_armbian.img.gz armbian_s905_p212.img
             cd ..
             ls -lh "${OUT_NAME}"
@@ -369,7 +372,7 @@ jobs:
           body: |
             - ➦ 💻 固件平台：arm64-linux GK6323V100C（四核 64 位 ARM Cortex-A55）
             - ➦ 🚀 内核版本：${{ env.KERNEL_VERSION }}（配合 kernel-image 发布使用）
-            - ➦ 📦 软件包：openssh-server / vsftpd / nginx / php8.4-cgi / php8.4-fpm / LMS
+            - ➦ 📦 软件包：openssh-server / vsftpd / nginx / php8.4-cgi / php8.4-fpm / LMS /wsdd2 /samba
             - ➦ 🎵 音频：squeezelite 默认 hw:1,0 若播放中断请改用 plughw:1,0
             ---
 
@@ -377,7 +380,6 @@ jobs:
             SSH 与 WinSCP SFTP 均可直接用 root / 1234 登录，登录后请尽快修改密码。
           files: |
             Armbian_*_s905_p212.img.gz
-            fip_output/u-boot.bin.sd.bin
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
