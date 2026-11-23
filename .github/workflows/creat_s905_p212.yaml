@@ -50,7 +50,7 @@ jobs:
          
           # Fetch latest S905X (GXL) Armbian image URL from ophub releases
             #IMG_URL=$(curl -sL "https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=10" \
-            IMG_URL=$(curl -sL "https://github.com/rmoyulong/amlogic-s9xxx-armbian/releases/latest" \
+            IMG_URL=$(curl -sL "https://github.com/rmoyulong/amlogic-s9xxx-armbian/releases/latest?per_page=1" \
               | jq -r '.[] 
                 | select(.tag_name | test("trixie"; "i")) 
                 | .assets[] 
