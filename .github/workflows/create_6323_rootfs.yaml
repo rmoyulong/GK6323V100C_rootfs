@@ -70,7 +70,6 @@ jobs:
         run: |
             set -e
             cd work_img
-            mkdir -p ext4_mnt
 
             ############### 给 p2 扩容 500M 开始 ######################################
             IMG=armbian_s905_p212.img
@@ -351,23 +350,9 @@ jobs:
             sudo rm -rf /mnt/armbian_root/tmp/patch            
             sudo sync
             # =====================================================================
-            #终止挂载
-            sudo umount /mnt/armbian_root              
-            sudo losetup -d "${LOOP_DEV}"
-            
-            echo "重新关联循环设备并拷贝分区..."
-            LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
-            # =====================================================================            
-            
-            #获得rootfs 分区的UUID
-            ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
-            #==============================================================================
-            # 先缩文件系统到最小（在 p2 上操作，需先 e2fsck）
-            #sudo e2fsck -f "${LOOP_DEV}p2"
-            sudo resize2fs -M "${LOOP_DEV}p2"
             
             rootfs_image="rootfs.img"
-            EXTRA_MB=300
+            EXTRA_MB=100
             FS_BYTES=$(sudo tune2fs -l "${LOOP_DEV}p2" | awk '/Block count/{c=$3} /Block size/{s=$3} END{print c*s}')
 
             # 目标字节数 = 文件系统大小 + 300MB
@@ -376,13 +361,14 @@ jobs:
             # dd 用 bs=1M，向上取整到 MB
             TARGET_MB=$(( (TARGET_BYTES + 1048575) / 1048576 ))
             sudo dd if=/dev/zero of="$rootfs_image" bs=1M count="$TARGET_MB"
+            ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
             sudo mkfs.ext4 -U "$ROOT_UUID" -L rootfs "$rootfs_image"            
             
-            sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
-            sudo mount "$rootfs_image" ext4_mnt
-            sudo cp -rfp /mnt/armbian_root/* ext4_mnt/
+            sudo mkdir -p /mnt/ext4_mnt
+            sudo mount "$rootfs_image" /mnt/ext4_mnt
+            sudo cp -rfp /mnt/armbian_root/* /mnt/ext4_mnt/
             sudo sync
-            sudo umount ext4_mnt        
+            sudo umount /mnt/ext4_mnt       
 
             # =====================================================================
             #终止挂载
