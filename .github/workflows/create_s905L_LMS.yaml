@@ -389,6 +389,8 @@ jobs:
           name: Armbian S905L/P212 (GXL 792MHz 低内存引导版) - 北京联通Q5音乐服务器
           body: |
             针对北京联通 Q5 (Amlogic GXL S905L / P212) 的 Armbian 自动化构建，集成 792MHz DDR3 BL2 + 主线 U-Boot 2024.01、低内存 `extlinux.conf` 引导配置、`ext4` 根分区预修复，并已预装 **squeezelite** 与 **wsdd2**。
+            
+            适用于内置 eMMC/NAND 损坏的 Amlogic GXBB 系列盒子，直接从外置 TF 卡冷启动主线 Armbian。
 
             ### TF 卡刷写说明 (Debian/Linux)
             ```bash
