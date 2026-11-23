@@ -160,7 +160,7 @@ jobs:
             # 在 chroot 内执行 默认使用bash
             sudo chsh -s /bin/bash root
             # 或者对普通用户
-            sudo chsh -s /bin/bash squeezeboxserver
+            #sudo chsh -s /bin/bash squeezeboxserver
 
             # 把 patch 目录整体拷进目标根，chroot 内通过 /tmp/patch 访问
             sudo mkdir -p /mnt/armbian_root/tmp/patch

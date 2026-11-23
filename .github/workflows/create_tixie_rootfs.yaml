@@ -238,7 +238,7 @@ jobs:
           # 默认使用bash
           sudo chsh -s /bin/bash root
           # 或者对普通用户
-          sudo chsh -s /bin/bash squeezeboxserver
+          #sudo chsh -s /bin/bash squeezeboxserver
 
           cd /
 
