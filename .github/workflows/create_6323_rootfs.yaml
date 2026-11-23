@@ -369,7 +369,7 @@ jobs:
             #sudo cp -rfp /mnt/armbian_root/* /mnt/ext4_mnt/
             #sudo sync
             #sudo umount /mnt/ext4_mnt
-            dd if="${LOOP_DEV}p2" of="$rootfs_image" bs=1M status=progres
+            sudo dd if="${LOOP_DEV}p2" of="$rootfs_image" bs=1M status=progres
 
             # =====================================================================
             #终止挂载
