@@ -78,10 +78,10 @@ jobs:
           
       - name: 注入 U-Boot、配置低内存引导并预装 squeezelite 与 wsdd2
         run: |
-          set -e
-          cd work_img
-          
-            ###############给p2扩容500M开始######################################
+            set -e
+            cd work_img
+
+            ############### 给 p2 扩容 500M 开始 ######################################
             IMG=armbian_s905_p212.img
             GROW_MB=500          # 在现有 P2 基础上额外增加的容量
             ALIGN_MB=20          # 额外余量，避免边界问题
@@ -112,18 +112,14 @@ jobs:
             sudo parted -s "$IMG" unit s mkpart primary ext4 "${P2_START_SECTOR}s" 100%
 
             echo "P2 已扩容到约 ${TARGET_P2_MB}MB（文件实际追加 ${ADD_MB}MB，含 ${ALIGN_MB}MB 余量）"
-            ###############给p2扩容500M结束######################################
-          
-          #############################################          
-          
-          echo "正在向镜像写入 792MHz 混合主线 U-Boot（保留 MBR 分区表）..."
-          dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=1 count=442
-          dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=512 skip=1 seek=1
+            ############### 给 p2 扩容 500M 结束 ######################################
 
-          echo "正在关联循环设备并检查修复分区..."
-          LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
+            #############################################
 
-          # 提前修复 ext4 块位图与 inode 校验和，禁用延迟初始化
+            echo "正在向镜像写入 792MHz 混合主线 U-Boot（保留 MBR 分区表）..."
+            dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=1 count=442
+            dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=512 skip=1 seek=1
+
             echo "正在关联循环设备并检查修复分区..."
             LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
             sudo partprobe "$LOOP_DEV" 2>/dev/null || true
@@ -155,56 +151,61 @@ jobs:
             sudo resize2fs "${LOOP_DEV}p2"
 
             sync
-          # ================= 新增部分：挂载 ROOT 分区并安装软件 =================
-          echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite 和 wsdd2..."
-          sudo mkdir -p /mnt/armbian_root
-          sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
 
-          # 备份镜像原有的 resolv.conf（如果是软链接则保留原状态）并注入宿主机的 DNS
-          if [ -L /mnt/armbian_root/etc/resolv.conf ]; then
-            sudo mv /mnt/armbian_root/etc/resolv.conf /mnt/armbian_root/etc/resolv.conf.bak
-          elif [ -f /mnt/armbian_root/etc/resolv.conf ]; then
-            sudo cp -a /mnt/armbian_root/etc/resolv.conf /mnt/armbian_root/etc/resolv.conf.bak
-          fi
-          sudo cp /etc/resolv.conf /mnt/armbian_root/etc/resolv.conf
+            # ================= 挂载 ROOT 分区并安装软件 =================
+            echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite 和 wsdd2..."
+            sudo mkdir -p /mnt/armbian_root
+            sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
 
-          # 复制 aarch64 模拟器 qemu-aarch64 并挂载虚拟文件系统
-          sudo cp /usr/bin/qemu-aarch64 /mnt/armbian_root/usr/bin/
-          sudo mount -t proc /proc /mnt/armbian_root/proc
-          sudo mount -t sysfs /sys /mnt/armbian_root/sys
-          sudo mount -o bind /dev /mnt/armbian_root/dev
-          sudo mount -o bind /dev/pts /mnt/armbian_root/dev/pts
+            # 把 patch 目录整体拷进目标根，chroot 内通过 /tmp/patch 访问
+            sudo mkdir -p /mnt/armbian_root/tmp/patch
+            sudo cp -a "${{ github.workspace }}/patch/." /mnt/armbian_root/tmp/patch/
 
-          # 在 arm64 容器环境内更新源并安装 squeezelite、wsdd2（同时确保 alsa-utils 等存在方便后续调音）
-          sudo chroot /mnt/armbian_root /bin/bash -c "
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update
-            apt-get install -y --no-install-recommends dos2unix qemu-utils dosfstools dump parted bzip2 kpartx build-essential net-tools cifs-utils bind9-dnsutils ethtool screen wget curl sudo file mtools p7zip-full git nginx php8.4-cgi php8.4-fpm php8.4-mysql usbutils pciutils e2fsprogs rsync          
-            apt-get install -y --no-install-recommends squeezelite wsdd2 alsa-utils alsa-tools ffmpeg
-            
-              ####################必要的设置开始######################
-              #挂载目录
+            # 备份镜像原有的 resolv.conf（如果是软链接则保留原状态）并注入宿主机的 DNS
+            if [ -L /mnt/armbian_root/etc/resolv.conf ]; then
+              sudo mv /mnt/armbian_root/etc/resolv.conf /mnt/armbian_root/etc/resolv.conf.bak
+            elif [ -f /mnt/armbian_root/etc/resolv.conf ]; then
+              sudo cp -a /mnt/armbian_root/etc/resolv.conf /mnt/armbian_root/etc/resolv.conf.bak
+            fi
+            sudo cp /etc/resolv.conf /mnt/armbian_root/etc/resolv.conf
+
+            # 复制 aarch64 模拟器 qemu-aarch64 并挂载虚拟文件系统
+            sudo cp /usr/bin/qemu-aarch64 /mnt/armbian_root/usr/bin/
+            sudo mount -t proc /proc /mnt/armbian_root/proc
+            sudo mount -t sysfs /sys /mnt/armbian_root/sys
+            sudo mount -o bind /dev /mnt/armbian_root/dev
+            sudo mount -o bind /dev/pts /mnt/armbian_root/dev/pts
+
+            # 第一轮 chroot：基础包 + 系统配置（不涉及 samba/LMS 配置覆盖）
+            sudo chroot /mnt/armbian_root /bin/bash -c "
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends dos2unix qemu-utils dosfstools dump parted bzip2 kpartx build-essential net-tools cifs-utils bind9-dnsutils ethtool screen wget curl sudo file mtools p7zip-full git nginx php8.4-cgi php8.4-fpm php8.4-mysql usbutils pciutils e2fsprogs rsync
+              apt-get install -y --no-install-recommends squeezelite wsdd2 alsa-utils alsa-tools ffmpeg
+
+              #################### 必要的设置开始 ######################
+              # 挂载目录
               sudo mkdir -p /mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
-            
-              #banner
+
+              # banner
               sudo mkdir -p "/etc/update-motd.d"
-              sudo cp ${{ github.workspace }}/patch/cats_banner /etc/cats_banner
+              sudo cp /tmp/patch/cats_banner /etc/cats_banner
               sudo tee "/etc/update-motd.d/40-cats_banner" > /dev/null <<'EOF'
               #!/bin/bash
               set -o pipefail
               cat /etc/cats_banner
               EOF
               sudo chmod +x /etc/update-motd.d/40-cats_banner
-              
+
               # 修改为中国时间
               sudo rm -rf /etc/localtime
               sudo ln -s /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-              
+
               # 修正为中文环境
               sudo mkdir -p "/etc/default"
-              sudo cp ${{ github.workspace }}/patch/locale.conf /etc/default/locale.conf
-              sudo cp ${{ github.workspace }}/patch/locale.gen /etc/locale.gen
-              sudo cp ${{ github.workspace }}/patch/locale.conf /etc/locale.conf
+              sudo cp /tmp/patch/locale.conf /etc/default/locale.conf
+              sudo cp /tmp/patch/locale.gen /etc/locale.gen
+              sudo cp /tmp/patch/locale.conf /etc/locale.conf
 
               sudo mkdir -p "/etc/sysctl.d"
               sudo tee "/etc/sysctl.d/99-lms-network.conf" > /dev/null <<'EOF'
@@ -218,97 +219,84 @@ jobs:
               EOF
               echo "----- 99-lms-network.conf -----"
               cat "/etc/sysctl.d/99-lms-network.conf"
-              
-              # 复制配置
-              sudo mkdir -p "/etc/samba"
-              sudo mkdir -p "/root"
-              sudo cp ${{ github.workspace }}/patch/smb.conf /etc/samba/smb.conf
-              sudo cp ${{ github.workspace }}/patch/.bashrc /mnt/rootfs/root/.bashrc
-              sudo chmod 0644 /mnt/rootfs/root/.bashrc
-              ####################必要的设置结束######################
-              
-              #################建立启动后运行一次的脚本-开始################################################
+
+              # .bashrc 正确路径是 /root/.bashrc
+              sudo cp /tmp/patch/.bashrc /root/.bashrc
+              sudo chmod 0644 /root/.bashrc
+              #################### 必要的设置结束 ######################
+
+              ################# 建立启动后运行一次的脚本-开始 ################################################
               sudo mkdir -p "/etc/systemd/system"
               sudo tee "/etc/systemd/system/resize-once.service" > /dev/null <<'EOF'
               [Unit]
               Description=One-time resize script
               After=multi-user.target
               ConditionPathExists=/etc/resize.sh
-              
+
               [Service]
               Type=oneshot
               ExecStart=/etc/resize.sh
               RemainAfterExit=no
-              
+
               [Install]
               WantedBy=multi-user.target
               EOF
-              
+
               sudo tee "/etc/resize.sh" > /dev/null <<'EOF'
               #!/bin/bash
               set -euo pipefail
-              
+
               # ===== 你的 resize 逻辑写在这里 =====
               chown root:root /etc/sudo.conf /etc/sudoers
-              chown -R root:root /etc/sudoers.d            
+              chown -R root:root /etc/sudoers.d
               chown root:root /usr/bin/sudo
               chmod 4755 /usr/bin/sudo
-                
-              resize2fs /dev/mmcblk1p2
-                
-              sudo chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
-              sudo chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
-              sudo chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
-                
-              sudo systemctl restart  lyrionmusicserver
+
+              ROOT_PART=$(findmnt -n -o SOURCE /)
+              resize2fs "$ROOT_PART"
+
+              chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
+              chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
+              chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
+
+              systemctl restart lyrionmusicserver
               # ===================================
-              
+
               # 执行完毕后自毁：禁用并删除服务、删除脚本自身
               systemctl disable resize-once.service 2>/dev/null || true
               rm -f /etc/systemd/system/resize-once.service
               rm -f /etc/resize.sh
               systemctl daemon-reload
               EOF
-              #################建立启动后运行一次的脚本-结束################################################
-              
-            systemctl enable squeezelite wsdd2 || true
-            #apt-get clean
-            #rm -rf /var/lib/apt/lists/*
-          "
-          
-          # 在 arm64 容器环境内安装smbd lyrionmusicserver
-          sudo chroot /mnt/armbian_root /bin/bash -c "
-            export DEBIAN_FRONTEND=noninteractive
-            #apt-get update
-            apt-get install -y sudo samba samba-common-bin smbclient locales exfat-fuse exfatprogs zip unzip
+              ################# 建立启动后运行一次的脚本-结束 ################################################
 
-            # 添加中文
-            locale-gen zh_CN.UTF-8
+              systemctl enable squeezelite wsdd2 || true
+            "
 
-            git clone https://github.com/rmoyulong/packages_lang_golang golang
+            # 第二轮 chroot：安装 samba / LMS，并在安装完成后再覆盖配置
+            sudo chroot /mnt/armbian_root /bin/bash -c "
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get install -y sudo samba samba-common-bin smbclient locales exfat-fuse exfatprogs zip unzip
 
-            rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
-            mkdir -p /var/lib/squeezeboxserver/prefs
-            mkdir -p /var/lib/squeezeboxserver/cache
-            mkdir -p /var/log/squeezeboxserver
+              # 添加中文
+              locale-gen zh_CN.UTF-8
 
-            dpkg -i ./golang/lms_arm.deb || true
-            apt-get --fix-broken install -y
-            
-            # 将系统源替换为中国清华大学源（适配 Ubuntu 24.04+ DEB822 格式与传统 list 格式）
-            # 替换 Ubuntu Ports (arm64) 源
-            find /etc/apt/ -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i \
-              -e 's|http://ubuntu.com|https://tsinghua.edu.cn|g' \
-              -e 's|http://ubuntu.com|https://tsinghua.edu.cn|g' \
-              -e 's|http://debian.org|https://tsinghua.edu.cn|g' \
-              -e 's|http://debian.org|https://tsinghua.edu.cn-security|g' \
-              -e 's|https://armbian.com|https://tsinghua.edu.cn|g' \
-              -e 's|http://armbian.com|https://tsinghua.edu.cn|g' {} +
-            
+              git clone https://github.com/rmoyulong/packages_lang_golang golang
+
+              rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
+              mkdir -p /var/lib/squeezeboxserver/prefs
+              mkdir -p /var/lib/squeezeboxserver/cache
+              mkdir -p /var/log/squeezeboxserver
+
+              dpkg -i ./golang/lms_arm.deb || true
+              apt-get --fix-broken install -y
+
+              # ---- 安装完成后再覆盖 samba 配置，避免被包 postinst 覆盖 ----
+              sudo mkdir -p "/etc/samba"
+              sudo cp /tmp/patch/smb.conf /etc/samba/smb.conf
+              testparm -s /etc/samba/smb.conf || echo "警告：smb.conf 校验失败"
+
               # ---------- squeezelite 的 ALSA 输出 ----------
-              # hw:1,0 为硬件直通，采样率必须与声卡原生一致；
-              # 若播放 44.1kHz 中断，请改回 plughw:1,0 让 ALSA 自动转换采样率。
-              # 声卡编号（card 1）需在目标设备上用 aplay -l 实测确认。
               sudo tee "/etc/default/squeezelite" > /dev/null <<'EOF'
               # Defaults for squeezelite initscript
               # sourced by /etc/init.d/squeezelite
@@ -328,73 +316,71 @@ jobs:
               echo "----- /etc/default/squeezelite -----"
               sudo cat "/etc/default/squeezelite"
 
-              # ---------- 4) 设置LMS plugins ----------
+              # ---------- LMS plugins：解压到正确目录 ----------
               sudo mkdir -p "/var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins"
               sudo mkdir -p "/var/lib/squeezeboxserver/prefs/plugin"
-              sudo tar zxvfp "./golang/plugins.tar.gz"
+              sudo tar zxvfp "./golang/plugins.tar.gz" -C "/var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins"
               rm -rf ./golang
-              
-              # ---------- 4) 设置samba config ----------
-              sudo mkdir -p "/etc/samba"
-              sudo cp ${{ github.workspace }}/patch/smb.conf /etc/samba/smb.conf
-          
-            systemctl enable smbd lyrionmusicserver || true
-            apt-get clean
-            rm -rf /var/lib/apt/lists/*
-          "
 
-          # 清理 chroot 环境并恢复 DNS 配置
-          sudo umount -lf /mnt/armbian_root/dev/pts
-          sudo umount -lf /mnt/armbian_root/dev
-          sudo umount -lf /mnt/armbian_root/sys
-          sudo umount -lf /mnt/armbian_root/proc
-          sudo rm -f /mnt/armbian_root/usr/bin/qemu-aarch64
-          sudo rm -f /mnt/armbian_root/etc/resolv.conf
-          if [ -e /mnt/armbian_root/etc/resolv.conf.bak ] || [ -L /mnt/armbian_root/etc/resolv.conf.bak ]; then
-            sudo mv /mnt/armbian_root/etc/resolv.conf.bak /mnt/armbian_root/etc/resolv.conf
-          fi
+              systemctl enable smbd lyrionmusicserver || true
+              apt-get clean
+              rm -rf /var/lib/apt/lists/*
+            "
 
-          sudo sync
-          sudo umount /mnt/armbian_root
-          # =====================================================================
+            # 清理 chroot 环境并恢复 DNS 配置
+            sudo umount -lf /mnt/armbian_root/dev/pts
+            sudo umount -lf /mnt/armbian_root/dev
+            sudo umount -lf /mnt/armbian_root/sys
+            sudo umount -lf /mnt/armbian_root/proc
+            sudo rm -f /mnt/armbian_root/usr/bin/qemu-aarch64
+            sudo rm -f /mnt/armbian_root/etc/resolv.conf
+            if [ -e /mnt/armbian_root/etc/resolv.conf.bak ] || [ -L /mnt/armbian_root/etc/resolv.conf.bak ]; then
+              sudo mv /mnt/armbian_root/etc/resolv.conf.bak /mnt/armbian_root/etc/resolv.conf
+            fi
+            # 删除临时 patch 目录，避免残留在镜像里
+            sudo rm -rf /mnt/armbian_root/tmp/patch
 
-          echo "正在挂载 BOOT 分区并配置适配 512MB 低内存的 extlinux.conf..."
-          sudo mkdir -p /mnt/armbian_boot
-          sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
+            sudo sync
+            sudo umount /mnt/armbian_root
+            # =====================================================================
 
-          if [ -f /mnt/armbian_boot/boot.scr ]; then
-            sudo mv /mnt/armbian_boot/boot.scr /mnt/armbian_boot/boot.scr.bak
-          fi
+            echo "正在挂载 BOOT 分区并配置适配 512MB 低内存的 extlinux.conf..."
+            sudo mkdir -p /mnt/armbian_boot
+            sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
 
-          KERNEL_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uImage|zImage|vmlinuz)' | head -n 1)
-          INITRD_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uInitrd|initrd)' | head -n 1)
-          ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+            if [ -f /mnt/armbian_boot/boot.scr ]; then
+              sudo mv /mnt/armbian_boot/boot.scr /mnt/armbian_boot/boot.scr.bak
+            fi
 
-          echo "检测到内核文件: $KERNEL_FILE, 内存盘文件: $INITRD_FILE, 根分区 UUID: $ROOT_UUID"
+            KERNEL_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uImage|zImage|vmlinuz)' | head -n 1)
+            INITRD_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uInitrd|initrd)' | head -n 1)
+            ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
 
-          sudo mkdir -p /mnt/armbian_boot/extlinux
-          sudo bash -c "cat > /mnt/armbian_boot/extlinux/extlinux.conf <<EOF
-          LABEL Armbian
-            LINUX /${KERNEL_FILE}
-            INITRD /${INITRD_FILE}
-            FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
-            APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0
-          EOF"
+            echo "检测到内核文件: $KERNEL_FILE, 内存盘文件: $INITRD_FILE, 根分区 UUID: $ROOT_UUID"
 
-          echo "生成的 extlinux.conf 内容如下："
-          cat /mnt/armbian_boot/extlinux/extlinux.conf
+            sudo mkdir -p /mnt/armbian_boot/extlinux
+            sudo bash -c "cat > /mnt/armbian_boot/extlinux/extlinux.conf <<EOF
+            LABEL Armbian
+              LINUX /${KERNEL_FILE}
+              INITRD /${INITRD_FILE}
+              FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
+              APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0
+            EOF"
 
-          sudo sync
-          sudo umount /mnt/armbian_boot
-          sudo losetup -d "${LOOP_DEV}"
+            echo "生成的 extlinux.conf 内容如下："
+            cat /mnt/armbian_boot/extlinux/extlinux.conf
 
-          BUILD_DATE=$(date +%Y.%m.%d)
-          OUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
-          echo "正在压缩生成最终镜像: $OUT_NAME..."
-          gzip -c armbian_s905_p212.img > "../${OUT_NAME}"
-          rm -f base_armbian.img.gz armbian_s905_p212.img
-          cd ..
-          ls -lh "${OUT_NAME}"
+            sudo sync
+            sudo umount /mnt/armbian_boot
+            sudo losetup -d "${LOOP_DEV}"
+
+            BUILD_DATE=$(date +%Y.%m.%d)
+            OUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
+            echo "正在压缩生成最终镜像: $OUT_NAME..."
+            gzip -c armbian_s905_p212.img > "../${OUT_NAME}"
+            rm -f base_armbian.img.gz armbian_s905_p212.img
+            cd ..
+            ls -lh "${OUT_NAME}"
 
       - name: 发布构建产物至 s905L_p212_LMS 标签
         uses: softprops/action-gh-release@v2
