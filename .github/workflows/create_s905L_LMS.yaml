@@ -187,7 +187,7 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
               apt-get install -y --no-install-recommends dos2unix qemu-utils dosfstools dump parted bzip2 kpartx build-essential net-tools cifs-utils bind9-dnsutils ethtool screen wget curl sudo file mtools p7zip-full git nginx php8.4-cgi php8.4-fpm php8.4-mysql usbutils pciutils e2fsprogs rsync
-              apt-get install -y --no-install-recommends squeezelite wsdd2 alsa-utils alsa-tools ffmpeg
+              apt-get install -y --no-install-recommends squeezelite wsdd2 alsa-utils alsa-tools ffmpeg locales
 
               #################### 必要的设置开始 ######################
               # 挂载目录
