@@ -1,4 +1,4 @@
-name: 构建北京联通Q5 Armbian S905L/P212 (GXL 792MHz 低内存引导版) 镜像
+name: 构建北京联通Q5 Armbian S905L/P212 (GXL 792MHz 低内存引导版)TF/SD内置卡槽启动镜像
 
 on:
   workflow_dispatch:
