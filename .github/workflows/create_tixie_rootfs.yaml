@@ -422,12 +422,12 @@ jobs:
           rm -f "$IMG"
           truncate -s "$TOTAL_BYTES" "$IMG"
           mkfs.ext4 -q -F -L rootfs -d "$WORK/rootfs" "$IMG"
-          gzip -c "$IMG" > "${IMG_GZ}"
 
           # ---------- 4. 校验 ----------
           ls -lh "$IMG"
           file "$IMG"
           e2fsck -fn "$IMG" || true
+          sudo gzip -c "$IMG" > "${IMG_GZ}"
 
           echo "rootfs.img created at $IMG ($((TOTAL_BYTES / 1024 / 1024)) MiB)"
 
