@@ -736,6 +736,11 @@ jobs:
           scripts/config --enable NET_VENDOR_HISILICON
           scripts/config --enable HISI_FEMAC
           scripts/config --enable MDIO_HISI_FEMAC
+          # IPv6 协议栈：IPv6 在剪裁层 ../slim.config 里被 `# CONFIG_IPV6 is not set`
+          # 关掉了（merge 顺序在功能层之后，谁后写谁生效）。本步骤在 merge 与
+          # olddefconfig 之后执行，这里显式打开；IPV6 是带 prompt 的 bool、
+          # 依赖 NET/INET 均满足，后面那次 olddefconfig 不会把它重算掉。
+          scripts/config --enable IPV6
           # HISI_FESTA_PHY：补丁库 rc3 起整库已无此符号，写在这里只会往 .config
           # 里塞一行无主键、随后被 olddefconfig 丢掉。已删除，改由「已移除符号
           # 报告」一节持续盯它 —— 驱动一旦回到补丁库就能立刻看到。
@@ -797,7 +802,7 @@ jobs:
           for s in ARCH_HISI ARM_GIC_V3 ARM_ARCH_TIMER SERIAL_AMBA_PL011_CONSOLE \
                    MMC_BLOCK MMC_DW_PLTFM \
                    EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
-                   NET_VENDOR_HISILICON PHYLIB HISI_FEMAC \
+                   NET_VENDOR_HISILICON PHYLIB HISI_FEMAC IPV6 \
                    USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
