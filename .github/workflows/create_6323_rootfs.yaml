@@ -66,10 +66,11 @@ jobs:
           echo "正在解压基础镜像..."
           gunzip -c base_armbian.img.gz > armbian_s905_p212.img
           
-      - name: 注入 U-Boot、配置低内存引导并预装 squeezelite 与 wsdd2
+      - name: 预装 LMS samba squeezelite nginx php8 wsdd2 并DIY配置
         run: |
             set -e
             cd work_img
+            mkdir -p ext4_mnt
 
             ############### 给 p2 扩容 500M 开始 ######################################
             IMG=armbian_s905_p212.img
@@ -321,6 +322,15 @@ jobs:
               wget https://github.com/rmoyulong/GK6323V100C/releases/download/gk6323v100c-latest/modules.tar.gz -O modules.tar.gz
               sudo tar zxvfp "./modules.tar.gz" -C "/usr"
               rm modules.tar.gz
+              
+              # ---------- 添加fstab ----------
+              sudo tee "/etc/fstab" > /dev/null <<'EOF'
+              # /etc/fstab: static file system information.
+              /dev/mmcblk0p18 /               ext4    defaults,noatime,errors=remount-ro 0       1
+              tmpfs           /tmp            tmpfs   defaults,nosuid                    0       0
+              EOF
+              echo "----- /etc/fstab -----"
+              cat "/etc/fstab"              
 
               systemctl enable smbd lyrionmusicserver || true
               apt-get clean
@@ -344,8 +354,25 @@ jobs:
             #获得rootfs 分区的UUID
             ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
             #==============================================================================
+            # 先缩文件系统到最小（在 p2 上操作，需先 e2fsck）
+            sudo e2fsck -f "${LOOP_DEV}p2"
+            sudo resize2fs -M "${LOOP_DEV}p2"
+            
             rootfs_image="rootfs.img"
-            sudo dd if="${LOOP_DEV}p2" of="$rootfs_image" bs=1M status=progress          
+            EXTRA_MB=300
+            FS_BYTES=$(sudo tune2fs -l "${LOOP_DEV}p2" | awk '/Block count/{c=$3} /Block size/{s=$3} END{print c*s}')
+
+            # 目标字节数 = 文件系统大小 + 300MB
+            TARGET_BYTES=$(( FS_BYTES + EXTRA_MB * 1024 * 1024 ))
+
+            # dd 用 bs=1M，向上取整到 MB
+            TARGET_MB=$(( (TARGET_BYTES + 1048575) / 1048576 ))
+            sudo dd if=/dev/zero of="$rootfs_image" bs=1M count="$TARGET_MB"
+            sudo mkfs.ext4 -U "$ROOT_UUID" -L rootfs "$rootfs_image"
+            
+            sudo mount "$rootfs_image" ext4_mnt
+            sudo cp -rfp /mnt/armbian_root/* ext4_mnt/
+            sudo umount ext4_mnt        
 
             # =====================================================================
             #终止挂载
@@ -359,7 +386,7 @@ jobs:
             #gzip -c armbian_s905_p212.img > "../${OUT_NAME}"
             
             OUT_NAME="rootfs.img.gz"
-            gzip -c rootfs.img > "../${OUT_NAME}"
+            gzip -c "$rootfs_image" > "../${OUT_NAME}"
             rm -f base_armbian.img.gz armbian_s905_p212.img
             cd ..
             sha256sum rootfs.img.gz > sha256sums.txt
