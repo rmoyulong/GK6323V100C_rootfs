@@ -5,7 +5,7 @@ on:
   push:
     branches: [ master, main ]
     paths:
-      - '.github/workflows/creat_s905.yaml'
+      - '.github/workflows/create_s905.yaml'
 
 permissions:
   contents: write
@@ -50,8 +50,8 @@ jobs:
           mkdir -p work_img
           cd work_img
           
-            #Fetch latest S905X (GXL) Armbian image URL from ophub releases
-            IMG_URL=$(curl -sL "https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=2" \
+            #Fetch latest S905X (GXL) Armbian image URL from rmoyulong releases
+            IMG_URL=$(curl -sL "https://api.github.com/repos/rmoyulong/amlogic-s9xxx-armbian/releases?per_page=2" \
               | jq -r '.[] 
                 | select(.tag_name | test("trixie"; "i")) 
                 | .assets[] 
