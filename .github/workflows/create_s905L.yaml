@@ -55,7 +55,8 @@ jobs:
           cd work_img
           
             #Fetch latest S905X (GXL) Armbian image URL from rmoyulong releases
-            IMG_URL=$(curl -sL "https://api.github.com/repos/rmoyulong/amlogic-s9xxx-armbian/releases?per_page=2" \
+            #IMG_URL=$(curl -sL "https://api.github.com/repos/rmoyulong/amlogic-s9xxx-armbian/releases?per_page=2" \
+            IMG_URL=$(curl -sL "https://github.com/rmoyulong/amlogic-s9xxx-armbian/releases/latest" \
               | jq -r '.[] 
                 | select(.tag_name | test("trixie"; "i")) 
                 | .assets[] 
