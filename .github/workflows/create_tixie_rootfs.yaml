@@ -418,9 +418,11 @@ jobs:
 
           # ---------- 3. 创建 ext4 镜像并用 -d 直接写入目录 ----------
           IMG="$OUT_DIR/rootfs.img"
+          IMG_GZ="$OUT_DIR/rootfs.img.gz"
           rm -f "$IMG"
           truncate -s "$TOTAL_BYTES" "$IMG"
           mkfs.ext4 -q -F -L rootfs -d "$WORK/rootfs" "$IMG"
+          gzip -c "$IMG" > "${IMG_GZ}"
 
           # ---------- 4. 校验 ----------
           ls -lh "$IMG"
