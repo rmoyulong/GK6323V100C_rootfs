@@ -234,7 +234,7 @@ jobs:
           #!/bin/bash
           set -euo pipefail
           
-          # 在 chroot 内执行 默认使用bash
+          # 默认使用bash
           chsh -s /bin/bash root
           # 或者对普通用户
           chsh -s /bin/bash squeezeboxserver
