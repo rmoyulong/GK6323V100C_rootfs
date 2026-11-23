@@ -351,24 +351,25 @@ jobs:
             sudo sync
             # =====================================================================
             
-            rootfs_image="rootfs.img"
-            EXTRA_MB=100
-            FS_BYTES=$(sudo tune2fs -l "${LOOP_DEV}p2" | awk '/Block count/{c=$3} /Block size/{s=$3} END{print c*s}')
+            rootfs_image="../rootfs.img"
+            #EXTRA_MB=100
+            #FS_BYTES=$(sudo tune2fs -l "${LOOP_DEV}p2" | awk '/Block count/{c=$3} /Block size/{s=$3} END{print c*s}')
 
             # 目标字节数 = 文件系统大小 + 300MB
-            TARGET_BYTES=$(( FS_BYTES + EXTRA_MB * 1024 * 1024 ))
+            #TARGET_BYTES=$(( FS_BYTES + EXTRA_MB * 1024 * 1024 ))
 
             # dd 用 bs=1M，向上取整到 MB
-            TARGET_MB=$(( (TARGET_BYTES + 1048575) / 1048576 ))
-            sudo dd if=/dev/zero of="$rootfs_image" bs=1M count="$TARGET_MB"
-            ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
-            sudo mkfs.ext4 -U "$ROOT_UUID" -L rootfs "$rootfs_image"            
+            #TARGET_MB=$(( (TARGET_BYTES + 1048575) / 1048576 ))
+            #sudo dd if=/dev/zero of="$rootfs_image" bs=1M count="$TARGET_MB"
+            #ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+            #sudo mkfs.ext4 -U "$ROOT_UUID" -L rootfs "$rootfs_image"            
             
-            sudo mkdir -p /mnt/ext4_mnt
-            sudo mount "$rootfs_image" /mnt/ext4_mnt
-            sudo cp -rfp /mnt/armbian_root/* /mnt/ext4_mnt/
-            sudo sync
-            sudo umount /mnt/ext4_mnt       
+            #sudo mkdir -p /mnt/ext4_mnt
+            #sudo mount "$rootfs_image" /mnt/ext4_mnt
+            #sudo cp -rfp /mnt/armbian_root/* /mnt/ext4_mnt/
+            #sudo sync
+            #sudo umount /mnt/ext4_mnt
+            dd if="${LOOP_DEV}p2" of="$rootfs_image" bs=1M status=progres
 
             # =====================================================================
             #终止挂载
