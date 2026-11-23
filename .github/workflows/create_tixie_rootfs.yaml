@@ -236,9 +236,9 @@ jobs:
           set -euo pipefail
           
           # 默认使用bash
-          chsh -s /bin/bash root
+          sudo chsh -s /bin/bash root
           # 或者对普通用户
-          chsh -s /bin/bash squeezeboxserver
+          sudo chsh -s /bin/bash squeezeboxserver
 
           cd /
 
