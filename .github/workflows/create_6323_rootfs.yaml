@@ -74,7 +74,7 @@ jobs:
 
             ############### 给 p2 扩容 500M 开始 ######################################
             IMG=armbian_s905_p212.img
-            GROW_MB=500          # 在现有 P2 基础上额外增加的容量
+            GROW_MB=200          # 在现有 P2 基础上额外增加的容量
             ALIGN_MB=20          # 额外余量，避免边界问题
 
             # P2 起始扇区（单位 s）
@@ -363,8 +363,8 @@ jobs:
             ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
             #==============================================================================
             # 先缩文件系统到最小（在 p2 上操作，需先 e2fsck）
-            sudo e2fsck -f "${LOOP_DEV}p2"
-            sudo resize2fs -M "${LOOP_DEV}p2"            
+            #sudo e2fsck -f "${LOOP_DEV}p2"
+            sudo resize2fs -M "${LOOP_DEV}p2"
             
             rootfs_image="rootfs.img"
             EXTRA_MB=300
