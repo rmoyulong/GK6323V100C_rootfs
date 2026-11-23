@@ -156,6 +156,11 @@ jobs:
             echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite 和 wsdd2..."
             sudo mkdir -p /mnt/armbian_root
             sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
+            
+            # 在 chroot 内执行 默认使用bash
+            chsh -s /bin/bash root
+            # 或者对普通用户
+            chsh -s /bin/bash squeezeboxserver
 
             # 把 patch 目录整体拷进目标根，chroot 内通过 /tmp/patch 访问
             sudo mkdir -p /mnt/armbian_root/tmp/patch
