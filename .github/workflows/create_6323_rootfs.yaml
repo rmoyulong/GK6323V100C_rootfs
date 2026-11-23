@@ -362,6 +362,7 @@ jobs:
             gzip -c rootfs.img > "../${OUT_NAME}"
             rm -f base_armbian.img.gz armbian_s905_p212.img
             cd ..
+            sha256sum rootfs.img.gz > sha256sums.txt
             ls -lh "${OUT_NAME}"
 
       - name: 发布构建产物至 gk6323v100c_rootfs 标签
@@ -379,7 +380,8 @@ jobs:
             **初始 root 密码：`1234`**
             SSH 与 WinSCP SFTP 均可直接用 root / 1234 登录，登录后请尽快修改密码。
           files: |
-            Armbian_*_s905_p212.img.gz
+            rootfs.img.gz
+            sha256sums.txt
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
