@@ -371,6 +371,10 @@ jobs:
 
           # ---------- 8) 创建挂载点（NAS MUSIC mount 使用） ----------
           sudo mkdir -p $ROOTFS_DIR/mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
+          
+          # ---------- 9) 创建 fstab ----------
+          #/etc/fstab（文件系统表）是 Linux 中定义磁盘分区、交换分区和网络共享等文件系统静态挂载信息的配置文件，主要用于实现开机自动挂载与统一管理挂载参数。
+          sudo cp ${{ github.workspace }}/patch/fstab $ROOTFS_DIR/etc/fstab
 
       - name: Package rootfs
         run: |
