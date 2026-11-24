@@ -81,7 +81,7 @@ jobs:
             --arch=arm64 \
             --variant=minbase \
             --components=main,non-free-firmware \
-            --include=systemd,systemd-sysv,dbus,ca-certificates,openssh-server,vsftpd,nginx,php8.4-cgi,php8.4-fpm,php8.4-mysql,procps,iproute2,iputils-ping,net-tools,vim,curl,wget,netplan.io,systemd-resolved,kmod,parted,dosfstools,e2fsprogs,rsync,fake-hwclock,systemd-timesyncd,usbutils,pciutils,evtest,kbd,dos2unix,mtools,firmware-realtek,firmware-iwlwifi,firmware-linux-free,ffmpeg,squeezelite,sudo,alsa-utils,alsa-tools,ethtool,cloud-guest-utils,wireless-regdb,zstd,git \
+            --include=systemd,systemd-sysv,dbus,ca-certificates,openssh-server,vsftpd,nginx,php8.4-cgi,php8.4-fpm,php8.4-mysql,procps,iproute2,iputils-ping,net-tools,vim,curl,wget,netplan.io,systemd-resolved,kmod,parted,dosfstools,e2fsprogs,rsync,fake-hwclock,systemd-timesyncd,usbutils,pciutils,evtest,kbd,dos2unix,mtools,firmware-realtek,firmware-iwlwifi,firmware-linux-free,ffmpeg,squeezelite,sudo,alsa-utils,alsa-tools,ethtool,cloud-guest-utils,wireless-regdb,zstd,git,nfs-common,rpcbind \
             "$DEBIAN_SUITE" "$ROOTFS_DIR" \
             "$MIRROR"
 
@@ -140,7 +140,8 @@ jobs:
           sudo tee "$ROOTFS_DIR/etc/systemd/system/resize-once.service" > /dev/null <<'EOF'
           [Unit]
           Description=One-time resize script
-          After=local-fs.target
+          After=local-fs.target network-online.target remote-fs.target
+          Wants=network-online.target remote-fs.target
           ConditionPathExists=/etc/resize.sh
 
           [Service]
@@ -168,12 +169,23 @@ jobs:
           # ===== 首次开机把根分区扩展到 eMMC 全部可用空间 =====
           resize2fs /dev/mmcblk0p18
 
-          # ===== 修正 LMS 目录属主并重启服务 =====
+          # ===== 强制 squeezeboxserver 的 uid/gid 为 1000/1000，
+          #       与服务端 /etc/exports 的 anonuid=1000,anongid=1000 对齐，
+          #       保证 NFS v3 挂载后 LMS 有权限读音乐文件 =====
+          if ! getent group nogroup >/dev/null 2>&1; then
+            groupadd -g 1000 nogroup || true
+          fi
           if id squeezeboxserver >/dev/null 2>&1; then
-            chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs 2>/dev/null
-            chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache 2>/dev/null
+            usermod -u 1000 -g nogroup squeezeboxserver 2>/dev/null || true
+            groupmod -g 1000 nogroup 2>/dev/null || true
+            chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver 2>/dev/null
             chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver 2>/dev/null
           fi
+
+          # ===== 触发 /etc/fstab 里的 NFS 挂载（_netdev 条目需在网络就绪后） =====
+          mount -a -t nfs,nfs4 2>/dev/null || true
+
+          # ===== 重启 LMS 让它能扫到 NFS 上的音乐 =====
           systemctl restart lyrionmusicserver 2>/dev/null
 
           # ===== 执行完毕后自毁：禁用并删除服务、删除脚本自身 =====
@@ -255,7 +267,7 @@ jobs:
 
           apt-get update
 
-          apt-get install -y sudo samba samba-common-bin smbclient wsdd2 locales exfat-fuse exfatprogs git zip unzip
+          apt-get install -y sudo locales exfat-fuse exfatprogs git zip unzip
 
           # 添加中文
           locale-gen zh_CN.UTF-8
@@ -302,8 +314,7 @@ jobs:
           sudo chroot "$ROOTFS_DIR" systemctl enable fake-hwclock || true
           sudo chroot "$ROOTFS_DIR" systemctl enable lyrionmusicserver || true
           sudo chroot "$ROOTFS_DIR" systemctl enable squeezelite || true
-          sudo chroot "$ROOTFS_DIR" systemctl enable smbd || true
-          sudo chroot "$ROOTFS_DIR" systemctl enable wsdd2 || true
+          sudo chroot "$ROOTFS_DIR" systemctl enable remote-fs.target || true
 
           sudo chmod +x "$ROOTFS_DIR/etc/resize.sh"
           sudo chroot "$ROOTFS_DIR" systemctl enable resize-once.service || true
@@ -365,16 +376,30 @@ jobs:
           sudo mkdir -p "$ROOTFS_DIR/root"
           sudo cp ${{ github.workspace }}/patch/.bashrc $ROOTFS_DIR/root/.bashrc
 
-          # ---------- 7) 添加samba配置 ----------
-          sudo mkdir -p "$ROOTFS_DIR/etc/samba"
-          sudo cp ${{ github.workspace }}/patch/smb.conf $ROOTFS_DIR/etc/samba/smb.conf
+          # ---------- 7) 已移除 samba 配置（2026-11-24 起板子不再跑 smbd/wsdd2，
+          #                板子只做 NAS 客户端，不对外共享文件；
+          #                板子对外文件访问用 ssh/sftp 或 vsftpd） ----------
 
-          # ---------- 8) 创建挂载点（NAS MUSIC mount 使用） ----------
+          # ---------- 8) 创建挂载点（NAS MUSIC 通过 NFS v3 挂载） ----------
           sudo mkdir -p $ROOTFS_DIR/mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
-          
-          # ---------- 9) 创建 fstab ----------
-          #/etc/fstab（文件系统表）是 Linux 中定义磁盘分区、交换分区和网络共享等文件系统静态挂载信息的配置文件，主要用于实现开机自动挂载与统一管理挂载参数。
-          sudo cp ${{ github.workspace }}/patch/fstab $ROOTFS_DIR/etc/fstab
+
+          # ---------- 9) 写 /etc/fstab（NFS v3 挂载 NAS 音乐目录）
+          # 服务端：192.168.31.60:/mnt/music/music
+          # 参数：nfsvers=3 锁死 v3；proto=tcp 走 TCP 防 UDP 丢包；
+          #       nolock 禁用 NLM（省去 statd/rpcbind 依赖，只读扫描最稳）；
+          #       soft,timeo=100,retrans=2 无响应 10s 报错不卡死；
+          #       _netdev 等网络就绪再挂；noatime 少一半元数据访问；
+          #       hard,intr,nofail 启动时服务端未就绪不卡死启动流程。
+          sudo tee "$ROOTFS_DIR/etc/fstab" > /dev/null <<'EOF'
+          # <file system>                           <mount point>  <type>  <options>                                                                         <dump> <pass>
+          /dev/root                                 /              ext4    defaults,rw,noatime,errors=remount-ro                                              0      1
+          proc                                      /proc          proc    defaults                                                                           0      0
+          sysfs                                     /sys           sysfs   defaults                                                                           0      0
+          devtmpfs                                  /dev           devtmpfs defaults                                                                          0      0
+          192.168.31.60:/mnt/music/music            /mnt/NAS       nfs     nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0      0
+          EOF
+          echo "----- /etc/fstab -----"
+          cat "$ROOTFS_DIR/etc/fstab"
 
       - name: Package rootfs
         run: |
@@ -458,12 +483,24 @@ jobs:
 
             - ➦ 💻 固件平台：arm64-linux GK6323V100C（四核 64 位 ARM Cortex-A55）
             - ➦ 🚀 内核版本：${{ env.KERNEL_VERSION }}（配合 kernel-image 发布使用）
-            - ➦ 📦 软件包：openssh-server / vsftpd / nginx / php8.4-cgi / php8.4-fpm / LMS
+            - ➦ 📦 软件包：openssh-server / vsftpd / nginx / php8.4-cgi / php8.4-fpm / LMS / nfs-common
             - ➦ 🎵 音频：squeezelite 默认 hw:1,0 若播放中断请改用 plughw:1,0
+            - ➦ 📁 挂载：已预置 /etc/fstab 通过 NFS v3 挂载 NAS 音乐目录到 /mnt/NAS，首次开机会自动 mount -a
             ---
 
             **初始 root 密码：`1234`**
             SSH 与 WinSCP SFTP 均可直接用 root / 1234 登录，登录后请尽快修改密码。
+
+            **NAS NFS 挂载（已写好 /etc/fstab）**
+
+              192.168.31.60:/mnt/music/music  →  /mnt/NAS
+              协议：NFS v3（TCP / nolock / soft / _netdev / nofail）
+
+            请确认服务端 /etc/exports 已导出：
+              /mnt/music/music 192.168.1.0/24(ro,sync,no_subtree_check,all_squash,anonuid=1000,anongid=1000)
+
+            首次开机时 resize.sh 会把 squeezeboxserver 的 uid/gid 对齐为 1000/nogroup，
+            与服务端 anonuid=1000/anongid=1000 一致，确保 LMS 有权限读音乐。
 
             若下载到的是 rootfs.tar.gz，直接解压：
               tar -xzf rootfs.tar.gz -C /目标分区
