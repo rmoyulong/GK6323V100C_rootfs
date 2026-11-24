@@ -72,7 +72,7 @@ jobs:
               | jq -r '.[] 
                 | select(.tag_name | test("trixie"; "i")) 
                 | .assets[] 
-                | select(.name | test("Armbian_.*_amlogic_s905x_trixie_.*\\.img\\.gz$")) 
+                | select(.name | test("Armbian_.*_amlogic_s905l_trixie_.*\\.img\\.gz$")) 
                 | .browser_download_url' \
               | head -n 1)
               
