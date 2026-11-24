@@ -1284,6 +1284,14 @@ jobs:
           KREL="$(make -s ARCH="$ARCH" kernelrelease)"
           cp arch/arm64/boot/boot.img out/boot.img
           cp arch/arm64/boot/Image out/Image
+          # 符号表：CONFIG_KALLSYMS 关掉后 oops 只打裸地址（pc : 0xffffffc0…），
+          #   必须用同一次构建的 System.map 反查函数名；不进 Image，不影响体积
+          if [ -f System.map ]; then
+            cp System.map out/System.map
+            echo "System.map：$(stat -c%s System.map) 字节 —— 已随产物上传，可把 oops 裸地址反查成函数名"
+          else
+            echo "警告：构建目录没有 System.map；如需解析 oops，请取构建目录里的 vmlinux（保留 ELF 符号表）" | tee out/System.map
+          fi
           # 单独发一份 dtb：真机运行时的设备树来自 dtbo 分区，这一份必须写入 p10
           cp "arch/arm64/boot/dts/hisilicon/$TARGET_DTB" out/
           # 刷机包格式的 dtbo.img：正好 2MiB（= p10 分区大小），全零补齐后再把 dtb 覆盖到开头。
@@ -1307,6 +1315,7 @@ jobs:
           # 生成校验清单，便于上机前后核对
           cd out
           sha256sum boot.img dtbo.img modules.tar.gz Image "$TARGET_DTB" "config-$KREL" > sha256sums.txt
+          sha256sum System.map >> sha256sums.txt 2>/dev/null || true
           cat sha256sums.txt
           echo "内核 release: $KREL"
           echo "=== 产物列表 ==="
@@ -1359,6 +1368,7 @@ jobs:
           | modules.tar.gz | 内核模块（含 USB 音频），解压到根目录 / |
           | Image | 未打包的裸内核，仅供核对 |
           | config-* | 本次实际使用的内核配置 |
+          | System.map | 内核符号表（不进镜像，用于把 oops 里的裸地址反查成函数名） |
           | sha256sums.txt | 上述产物的校验值 |
 
           ## 刷写步骤（顺序不可颠倒）
@@ -1413,6 +1423,7 @@ jobs:
             linux_build/out/${{ env.TARGET_DTB }}
             linux_build/out/modules.tar.gz
             linux_build/out/Image
+            linux_build/out/System.map
             linux_build/out/sha256sums.txt
             linux_build/out/config-*
 
@@ -1432,5 +1443,6 @@ jobs:
             linux_build/out/${{ env.TARGET_DTB }}
             linux_build/out/modules.tar.gz
             linux_build/out/Image
+            linux_build/out/System.map
             linux_build/out/sha256sums.txt
             linux_build/out/config-*
