@@ -243,12 +243,16 @@ jobs:
               sudo chmod 0644 /root/.bashrc
               #################### 必要的设置结束 ######################
 
-              ################# 建立启动后运行一次的脚本-开始 ################################################
-              sudo mkdir -p "/etc/systemd/system"
-              sudo tee "/etc/systemd/system/resize-once.service" > /dev/null <<'EOF'
+              #################建立启动后运行一次的脚本-开始################################################
+              sudo mkdir -p "$ROOTFS_DIR/etc/systemd/system"
+              # 注意：这里不能写 After=multi-user.target，
+              # 否则与该服务自己的 WantedBy=multi-user.target 构成 ordering cycle，
+              # systemd 会打断它、启动时机不确定，导致 resize2fs 不按预期执行。
+              # 改为在 local-fs.target 之后（根分区已挂载）即可，且不产生环。
+              sudo tee "$ROOTFS_DIR/etc/systemd/system/resize-once.service" > /dev/null <<'EOF'
               [Unit]
               Description=One-time resize script
-              After=multi-user.target
+              After=local-fs.target
               ConditionPathExists=/etc/resize.sh
 
               [Service]
@@ -260,33 +264,40 @@ jobs:
               WantedBy=multi-user.target
               EOF
 
-              sudo tee "/etc/resize.sh" > /dev/null <<'EOF'
+              # 注意：刻意不用 set -e。若某个 chown 因文件缺失返回非零就提前退出，
+              # 后面的 resize2fs 便不会执行、首次开机扩容会失效。
+              sudo tee "$ROOTFS_DIR/etc/resize.sh" > /dev/null <<'EOF'
               #!/bin/bash
-              set -euo pipefail
+              set -uo pipefail
 
               # ===== 你的 resize 逻辑写在这里 =====
-              chown root:root /etc/sudo.conf /etc/sudoers
-              chown -R root:root /etc/sudoers.d
-              chown root:root /usr/bin/sudo
-              chmod 4755 /usr/bin/sudo
+              # ===== 修复 sudo 相关权限（tar 打包可能丢失属主/setuid 位） =====
+              [ -e /etc/sudo.conf ] && chown root:root /etc/sudo.conf
+              [ -e /etc/sudoers ]   && chown root:root /etc/sudoers
+              [ -d /etc/sudoers.d ] && chown -R root:root /etc/sudoers.d
+              [ -e /usr/bin/sudo ]  && chown root:root /usr/bin/sudo
+              [ -e /usr/bin/sudo ]  && chmod 4755 /usr/bin/sudo
 
+
+              # ===== 首次开机把根分区扩展到 eMMC 全部可用空间 =====
               ROOT_PART=$(findmnt -n -o SOURCE /)
               resize2fs "$ROOT_PART"
 
-              chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
-              chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
-              chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
+              # ===== 修正 LMS 目录属主并重启服务 =====
+              if id squeezeboxserver >/dev/null 2>&1; then
+                chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs 2>/dev/null
+                chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache 2>/dev/null
+                chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver 2>/dev/null
+              fi
+              systemctl restart lyrionmusicserver 2>/dev/null
 
-              systemctl restart lyrionmusicserver
-              # ===================================
-
-              # 执行完毕后自毁：禁用并删除服务、删除脚本自身
-              systemctl disable resize-once.service 2>/dev/null || true
+              # ===== 执行完毕后自毁：禁用并删除服务、删除脚本自身 =====
+              systemctl disable resize-once.service 2>/dev/null
               rm -f /etc/systemd/system/resize-once.service
               rm -f /etc/resize.sh
               systemctl daemon-reload
               EOF
-              ################# 建立启动后运行一次的脚本-结束 ################################################
+              #################建立启动后运行一次的脚本-结束################################################
 
               systemctl enable squeezelite wsdd2 || true
             "

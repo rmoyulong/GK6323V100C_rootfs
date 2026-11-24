@@ -9,7 +9,7 @@ on:
         default: 'trixie'
   push:
     paths:
-      - '.github/workflows/create_tixie_rootfs.yaml'
+      - '.github/workflows/create_trixie_rootfs.yaml'
 
 permissions:
   contents: write
@@ -52,7 +52,7 @@ jobs:
           rm -f /tmp/debian-archive-keyring.deb
           echo "[OK] debian-archive-keyring 2025.1 installed"
 
-      # ★ 新增：安装 QEMU 用户态模拟，使 x86 runner 能 chroot 运行 arm64 二进制
+      # ★ 安装 QEMU 用户态模拟，使 x86 runner 能 chroot 运行 arm64 二进制
       - name: Install QEMU for arm64 emulation
         run: |
           set -euo pipefail
@@ -105,10 +105,12 @@ jobs:
       - name: Configure APT sources
         run: |
           set -euo pipefail
+          # trixie 官方组件为 main / contrib / non-free / non-free-firmware，
+          # 四者都写进来，后续想装 contrib、non-free 的包才不会找不到。
           sudo tee "$ROOTFS_DIR/etc/apt/sources.list" > /dev/null <<EOF
-          deb $MIRROR ${DEBIAN_SUITE} main non-free-firmware
-          deb $MIRROR ${DEBIAN_SUITE}-updates main non-free-firmware
-          deb http://security.debian.org/debian-security ${DEBIAN_SUITE}-security main non-free-firmware
+          deb $MIRROR ${DEBIAN_SUITE} main contrib non-free non-free-firmware
+          deb $MIRROR ${DEBIAN_SUITE}-updates main contrib non-free non-free-firmware
+          deb http://security.debian.org/debian-security ${DEBIAN_SUITE}-security main contrib non-free non-free-firmware
           EOF
           echo "----- sources.list -----"
           cat "$ROOTFS_DIR/etc/apt/sources.list"
@@ -128,51 +130,60 @@ jobs:
           EOF
           echo "----- 99-lms-network.conf -----"
           cat "$ROOTFS_DIR/etc/sysctl.d/99-lms-network.conf"
-          
+
           #################建立启动后运行一次的脚本-开始################################################
           sudo mkdir -p "$ROOTFS_DIR/etc/systemd/system"
+          # 注意：这里不能写 After=multi-user.target，
+          # 否则与该服务自己的 WantedBy=multi-user.target 构成 ordering cycle，
+          # systemd 会打断它、启动时机不确定，导致 resize2fs 不按预期执行。
+          # 改为在 local-fs.target 之后（根分区已挂载）即可，且不产生环。
           sudo tee "$ROOTFS_DIR/etc/systemd/system/resize-once.service" > /dev/null <<'EOF'
           [Unit]
           Description=One-time resize script
-          After=multi-user.target
+          After=local-fs.target
           ConditionPathExists=/etc/resize.sh
-          
+
           [Service]
           Type=oneshot
           ExecStart=/etc/resize.sh
           RemainAfterExit=no
-          
+
           [Install]
           WantedBy=multi-user.target
           EOF
-          
+
+          # 注意：刻意不用 set -e。若某个 chown 因文件缺失返回非零就提前退出，
+          # 后面的 resize2fs 便不会执行、首次开机扩容会失效。
           sudo tee "$ROOTFS_DIR/etc/resize.sh" > /dev/null <<'EOF'
           #!/bin/bash
-          set -euo pipefail
-          
-          # ===== 你的 resize 逻辑写在这里 =====
-          chown root:root /etc/sudo.conf /etc/sudoers
-          chown -R root:root /etc/sudoers.d            
-          chown root:root /usr/bin/sudo
-          chmod 4755 /usr/bin/sudo
-            
+          set -uo pipefail
+
+          # ===== 修复 sudo 相关权限（tar 打包可能丢失属主/setuid 位） =====
+          [ -e /etc/sudo.conf ] && chown root:root /etc/sudo.conf
+          [ -e /etc/sudoers ]   && chown root:root /etc/sudoers
+          [ -d /etc/sudoers.d ] && chown -R root:root /etc/sudoers.d
+          [ -e /usr/bin/sudo ]  && chown root:root /usr/bin/sudo
+          [ -e /usr/bin/sudo ]  && chmod 4755 /usr/bin/sudo
+
+          # ===== 首次开机把根分区扩展到 eMMC 全部可用空间 =====
           resize2fs /dev/mmcblk0p18
-            
-          sudo chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs
-          sudo chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache
-          sudo chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver
-            
-          sudo systemctl restart  lyrionmusicserver
-          # ===================================
-          
-          # 执行完毕后自毁：禁用并删除服务、删除脚本自身
-          systemctl disable resize-once.service 2>/dev/null || true
+
+          # ===== 修正 LMS 目录属主并重启服务 =====
+          if id squeezeboxserver >/dev/null 2>&1; then
+            chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs 2>/dev/null
+            chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache 2>/dev/null
+            chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver 2>/dev/null
+          fi
+          systemctl restart lyrionmusicserver 2>/dev/null
+
+          # ===== 执行完毕后自毁：禁用并删除服务、删除脚本自身 =====
+          systemctl disable resize-once.service 2>/dev/null
           rm -f /etc/systemd/system/resize-once.service
           rm -f /etc/resize.sh
           systemctl daemon-reload
           EOF
           #################建立启动后运行一次的脚本-结束################################################
-          
+
           sudo mkdir -p "$ROOTFS_DIR/etc/update-motd.d"
           sudo cp ${{ github.workspace }}/patch/cats_banner $ROOTFS_DIR/etc/cats_banner
           sudo tee "$ROOTFS_DIR/etc/update-motd.d/40-cats_banner" > /dev/null <<'EOF'
@@ -181,11 +192,11 @@ jobs:
           cat /etc/cats_banner
           EOF
           sudo chmod +x $ROOTFS_DIR/etc/update-motd.d/40-cats_banner
-          
+
           # 修改为中国时间
           sudo rm -rf $ROOTFS_DIR/etc/localtime
           sudo ln -s /usr/share/zoneinfo/Asia/Shanghai $ROOTFS_DIR/etc/localtime
-          
+
           # 修正为中文环境
           sudo mkdir -p "$ROOTFS_DIR/etc/default"
           sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/default/locale.conf
@@ -234,11 +245,11 @@ jobs:
           sudo tee "$ROOTFS_DIR/tmp/install-lms.sh" >/dev/null <<'EOF'
           #!/bin/bash
           set -euo pipefail
-          
+
           # 默认使用bash
-          sudo chsh -s /bin/bash root
+          chsh -s /bin/bash root
           # 或者对普通用户
-          #sudo chsh -s /bin/bash squeezeboxserver
+          #chsh -s /bin/bash squeezeboxserver
 
           cd /
 
@@ -249,11 +260,7 @@ jobs:
           # 添加中文
           locale-gen zh_CN.UTF-8
 
-          git clone https://github.com/rmoyulong/packages_lang_golang golang
-          #cd golang
-          #zip -s 0 lms_arm.zip --out lms_arm_full.zip
-          #unzip lms_arm_full.zip
-          #cd ..
+          git clone --depth 1 https://github.com/rmoyulong/packages_lang_golang golang
 
           rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
 
@@ -297,14 +304,18 @@ jobs:
           sudo chroot "$ROOTFS_DIR" systemctl enable squeezelite || true
           sudo chroot "$ROOTFS_DIR" systemctl enable smbd || true
           sudo chroot "$ROOTFS_DIR" systemctl enable wsdd2 || true
-          
+
           sudo chmod +x "$ROOTFS_DIR/etc/resize.sh"
           sudo chroot "$ROOTFS_DIR" systemctl enable resize-once.service || true
 
-          sudo chroot "$ROOTFS_DIR" netplan generate || true
-
           sudo chroot "$ROOTFS_DIR" apt-get clean
           sudo rm -rf "$ROOTFS_DIR/var/lib/apt/lists/"* || true
+
+          # ★ 清理：qemu 静态二进制与临时安装脚本不能留进正式镜像
+          #   （qemu-debootstrap 会把模拟器注入 /usr/bin，打包会一并带走，白占空间）
+          sudo rm -f "$ROOTFS_DIR/usr/bin/qemu-aarch64-static"
+          sudo rm -rf "$ROOTFS_DIR/usr/libexec/qemu-binfmt" || true
+          sudo rm -f "$ROOTFS_DIR/tmp/install-lms.sh"
 
       - name: Configure audio (squeezelite + HDA no-powersave)
         run: |
@@ -334,26 +345,30 @@ jobs:
           sudo cat "$ROOTFS_DIR/etc/default/squeezelite"
 
           # ---------- 4) 设置LMS plugins ----------
-          git clone https://github.com/rmoyulong/packages_lang_golang golang
+          git clone --depth 1 https://github.com/rmoyulong/packages_lang_golang golang
           sudo mkdir -p "$ROOTFS_DIR/var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins"
           sudo mkdir -p "$ROOTFS_DIR/var/lib/squeezeboxserver/prefs/plugin"
           sudo tar zxvfp "./golang/plugins.tar.gz" -C "$ROOTFS_DIR"
           rm -rf ./golang
-          
+
           # ---------- 5) 添加GK6323V100C生成物-模块 ----------
           sudo mkdir -p "$ROOTFS_DIR/usr/lib/modules"
-          wget https://github.com/rmoyulong/GK6323V100C/releases/download/gk6323v100c-latest/modules.tar.gz -O modules.tar.gz
+          wget --tries=3 --timeout=60 \
+            https://github.com/rmoyulong/GK6323V100C/releases/download/gk6323v100c-latest/modules.tar.gz \
+            -O modules.tar.gz
           sudo tar zxvfp "./modules.tar.gz" -C "$ROOTFS_DIR/usr"
-          rm modules.tar.gz
-          
+          rm -f modules.tar.gz
+          echo "----- /usr/lib/modules 内容 -----"
+          ls -1 "$ROOTFS_DIR/usr/lib/modules/" || true
+
           # ---------- 6) 添加.bashrc 让ls有颜色 ----------
           sudo mkdir -p "$ROOTFS_DIR/root"
           sudo cp ${{ github.workspace }}/patch/.bashrc $ROOTFS_DIR/root/.bashrc
-          
+
           # ---------- 7) 添加samba配置 ----------
           sudo mkdir -p "$ROOTFS_DIR/etc/samba"
           sudo cp ${{ github.workspace }}/patch/smb.conf $ROOTFS_DIR/etc/samba/smb.conf
-          
+
           # ---------- 8) 创建挂载点（NAS MUSIC mount 使用） ----------
           sudo mkdir -p $ROOTFS_DIR/mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
 
@@ -380,33 +395,13 @@ jobs:
           set -euo pipefail
           ls -lh "$OUT_DIR"
 
-          # ---------- 1. 准备 tar 源文件（合并分片） ----------
-          TARBALL="$OUT_DIR/rootfs.tar.gz"
-          if [ ! -f "$TARBALL" ]; then
-            if [ -f "$OUT_DIR/rootfs.tar.gz.part-aa" ]; then
-              echo "Merging split parts..."
-              cat "$OUT_DIR"/rootfs.tar.gz.part-* > "$TARBALL"
-            else
-              echo "ERROR: no rootfs.tar.gz or parts found in $OUT_DIR" >&2
-              ls -lh "$OUT_DIR" >&2
-              exit 1
-            fi
-          fi
-          test -f "$TARBALL"
-
-          # ---------- 2. 解压到临时目录并测量大小 ----------
-          #   /dev 下的设备节点需要 root 才能 mknod，普通用户解压会报错；
-          #   这里只为测大小，排除 ./dev 即可，不影响 du 结果。
-          WORK="$(mktemp -d)"
-          trap 'rm -rf "$WORK"' EXIT
-
-          echo "Extracting tarball to measure size..."
-          mkdir -p "$WORK/rootfs"
-          tar -xzf "$TARBALL" -C "$WORK/rootfs" --exclude='./dev/*'
-
-          #已经启动自动扩容，所以image只用扩大150MB
-          USED_KB="$(du -sk "$WORK/rootfs" | awk '{print $1}')"
+          # ---------- 1. 直接用已构建好的 rootfs 目录测量大小 ----------
+          #   不再把 tar 解压再重建：普通用户解压会丢失 root:root 属主
+          #   （镜像里 /bin、/etc 等会变成 runner 的 uid），
+          #   直接以 root 读取 $ROOTFS_DIR 才能保证属主、权限、设备节点正确。
+          USED_KB="$(sudo du -sk "$ROOTFS_DIR" | awk '{print $1}')"
           USED_BYTES=$((USED_KB * 1024))
+          # 已启用首次开机自动扩容，image 只多留 150MB 余量即可
           EXTRA_BYTES=$((150 * 1024 * 1024))
           TOTAL_BYTES=$((USED_BYTES + EXTRA_BYTES))
 
@@ -416,20 +411,32 @@ jobs:
           echo "Rootfs used : $((USED_BYTES / 1024 / 1024)) MiB"
           echo "Image size  : $((TOTAL_BYTES / 1024 / 1024)) MiB"
 
-          # ---------- 3. 创建 ext4 镜像并用 -d 直接写入目录 ----------
+          # ---------- 2. 创建 ext4 镜像（-d 直接写入目录，保留属主） ----------
           IMG="$OUT_DIR/rootfs.img"
           IMG_GZ="$OUT_DIR/rootfs.img.gz"
-          rm -f "$IMG"
-          truncate -s "$TOTAL_BYTES" "$IMG"
-          mkfs.ext4 -q -F -L rootfs -d "$WORK/rootfs" "$IMG"
+          sudo rm -f "$IMG"
+          sudo truncate -s "$TOTAL_BYTES" "$IMG"
+          sudo mkfs.ext4 -q -F -L rootfs -d "$ROOTFS_DIR" "$IMG"
 
-          # ---------- 4. 校验 ----------
+          # ---------- 3. 完整性校验（真检查，不再用 -n + || true 吞掉结果） ----------
           ls -lh "$IMG"
           file "$IMG"
-          e2fsck -fn "$IMG" || true
-          sudo gzip -c "$IMG" > "${IMG_GZ}"
+          echo "正在对生成的 ext4 镜像做完整性检查..."
+          rc=0
+          sudo e2fsck -fy "$IMG" || rc=$?
+          if [ "$rc" -gt 2 ]; then
+            echo "e2fsck 失败，返回码 $rc" >&2
+            exit 1
+          fi
+          echo "[OK] e2fsck 通过（返回码 $rc；0=干净，1/2=已自动修复）"
 
-          echo "rootfs.img created at $IMG ($((TOTAL_BYTES / 1024 / 1024)) MiB)"
+          # ---------- 4. 压缩，并删除未压缩镜像，避免 release 体积翻倍 ----------
+          echo "正在压缩镜像..."
+          sudo gzip -c "$IMG" > "$IMG_GZ"
+          sudo rm -f "$IMG"
+          ls -lh "$IMG_GZ"
+
+          echo "rootfs.img.gz created at $IMG_GZ ($((TOTAL_BYTES / 1024 / 1024)) MiB)"
 
       - name: Create Release and upload
         uses: ncipollo/release-action@v1
