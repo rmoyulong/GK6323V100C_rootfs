@@ -795,10 +795,16 @@ jobs:
           scripts/config --module NFS_FS
           scripts/config --enable NFS_V3
           scripts/config --enable NFS_V3_ACL
-          # ★ cgroup v2：Debian Trixie 的 systemd 257 已移除 cgroup v1 支持，必须开启
-          #   缺此项则所有服务启动时都会报 status=219/CGROUP，串口登录/LMS/播放器全挂
-          scripts/config --enable CGROUPS_V2
+          # ★ cgroup v2：Debian Trixie 的 systemd 257 已移除 cgroup v1 支持，只认统一层级。
+          #   ★★ 没有 CONFIG_CGROUPS_V2 这个符号，千万别写它：写了会被 olddefconfig 丢掉，
+          #      随后被「必须项」硬校验拦下 —— 2026-11-24 那次 exit 1 就是这么来的。
+          #      7.4-rc3 树自带的 Documentation/admin-guide/cgroup-v2.rst 只要求
+          #      `mount -t cgroup2 none <挂载点>`；参考仓库 hi3798mv100 那份可工作的完整
+          #      .config 里也是 CGROUPS=y + 一批控制器本体，通篇没有 CGROUPS_V2。
+          #      这棵树把 v1 兼容拆成每控制器可选的 MEMCG_V1 / CPUSETS_V1（默认关）。
+          #      必须齐的是控制器本体：少一个，所有服务启动时都会报 status=219/CGROUP。
           scripts/config --enable MEMCG
+          scripts/config --enable CPUSETS
           scripts/config --enable BLK_CGROUP
           scripts/config --enable CGROUP_PIDS
           scripts/config --enable CGROUP_FREEZER
@@ -828,7 +834,7 @@ jobs:
                    EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
                    NET_VENDOR_HISILICON PHYLIB HISI_FEMAC IPV6 \
                    USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES \
-                   CGROUPS CGROUPS_V2 \
+                   CGROUPS MEMCG CPUSETS \
                    NFS_FS NFS_V3; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
@@ -898,6 +904,7 @@ jobs:
                    SND SND_USB SND_SOC SND_SOC_ES8316 \
                    SND_SOC_HISTB_AIAO_I2S SND_SOC_HISTB_AIAO_CARD \
                    SND_SIMPLE_CARD \
+                   PSI BPF_SYSCALL CGROUP_BPF \
                    NLS NLS_UTF8 NLS_CODEPAGE_936; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
