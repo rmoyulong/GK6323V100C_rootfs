@@ -784,6 +784,18 @@ jobs:
           # 模块支持：作者那版是纯内置内核（/proc/modules 不存在）
           scripts/config --enable MODULES
           scripts/config --enable MODULE_UNLOAD
+          # ★ CIFS（SMB）支持：挂载 NAS 音乐目录。显式编成模块，避免被 slim.config
+          #   裁掉。注意：7.4-rc3 主线的 CIFS_MD4（NTLMv2 内联哈希加速）与新 crypto
+          #   异步改动有 use-after-free，扫描大量小文件时命中 Oops（x24 为 SLUB poison
+          #   值 0xd0d0d0d0...），必须关掉；CIFS_UPCALL 走 keyctl 异步也可能竞态，一并
+          #   关闭。禁用后 NTLMSSP 仍可用，SMB 挂载/guest/中文文件名均不受影响；
+          #   推荐在 fstab 里用 vers=2.1 + soft + cache=loose，避开 SMB3 multichannel
+          #   高风险路径。
+          scripts/config --module CIFS
+          scripts/config --enable CIFS_SMB2
+          scripts/config --disable CIFS_MD4
+          scripts/config --disable CIFS_UPCALL
+          scripts/config --disable CIFS_DFS_UPCALL
           # 启动参数不再在这里置空：kernel.config 叠加层里已带上完整的
           # CONFIG_CMDLINE 与 CONFIG_CMDLINE_FORCE=y（理由见该文件对应段落）。
           # ★ 这里原本是 `scripts/config --set-str CMDLINE ""`。本步骤在 merge 之后
@@ -803,12 +815,23 @@ jobs:
                    MMC_BLOCK MMC_DW_PLTFM \
                    EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
                    NET_VENDOR_HISILICON PHYLIB HISI_FEMAC IPV6 \
-                   USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES; do
+                   USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES CIFS; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
             else
               echo "::error::CONFIG_$s 未开启 —— 若该符号被 if 包住，请先确认它的父菜单已开启（见 docs/troubleshooting.md 构建阶段第 4 条）"
               exit 1
+            fi
+          done
+
+          # ★ CIFS_MD4/CIFS_UPCALL 必须为 not set：7.4-rc3 主线 NTLMv2 哈希加速
+          #   存在 use-after-free（x24=0xd0d0d0... SLUB poison），扫描大量小文件会 panic。
+          for s in CIFS_MD4 CIFS_UPCALL CIFS_DFS_UPCALL; do
+            if grep -qE "^CONFIG_${s}=[ym]$" .config; then
+              echo "::error::CONFIG_$s 必须关闭（7.4-rc3 主线存在 use-after-free）"
+              exit 1
+            else
+              echo "OK   CONFIG_$s is not set"
             fi
           done
 
