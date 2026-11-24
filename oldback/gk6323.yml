@@ -795,6 +795,13 @@ jobs:
           scripts/config --module NFS_FS
           scripts/config --enable NFS_V3
           scripts/config --enable NFS_V3_ACL
+          # ★ cgroup v2：Debian Trixie 的 systemd 257 已移除 cgroup v1 支持，必须开启
+          #   缺此项则所有服务启动时都会报 status=219/CGROUP，串口登录/LMS/播放器全挂
+          scripts/config --enable CGROUPS_V2
+          scripts/config --enable MEMCG
+          scripts/config --enable BLK_CGROUP
+          scripts/config --enable CGROUP_PIDS
+          scripts/config --enable CGROUP_FREEZER
           # 同时把 CIFS 一族全部关掉（slim.config 里已关，这里再兜一道）。
           scripts/config --disable CIFS
           scripts/config --disable CIFS_MD4
@@ -821,6 +828,7 @@ jobs:
                    EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
                    NET_VENDOR_HISILICON PHYLIB HISI_FEMAC IPV6 \
                    USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES \
+                   CGROUPS CGROUPS_V2 \
                    NFS_FS NFS_V3; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
