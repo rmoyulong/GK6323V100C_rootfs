@@ -73,9 +73,6 @@ jobs:
       - name: Inject P212 Mainline U-Boot and Configure DTB
         run: |
           cd armbian_build
-          # Write GXL P212 U-Boot into image while preserving MBR partition table
-          dd if=../u-boot.bin.sd.bin of=base_armbian.img conv=notrunc,fsync bs=1 count=442
-          dd if=../u-boot.bin.sd.bin of=base_armbian.img conv=notrunc,fsync bs=512 skip=1 seek=1
 
           # Mount boot partition with sudo and set DTB to meson-gxl-s905x-p212.dtb
           LOOP_DEV=$(sudo losetup --find --show --partscan base_armbian.img)
@@ -100,6 +97,10 @@ jobs:
           sudo umount /mnt/armbian_boot
           sudo losetup -d "$LOOP_DEV"
 
+          # Write GXL P212 U-Boot into image while preserving MBR partition table
+          dd if=../u-boot.bin.sd.bin of=base_armbian.img conv=notrunc,fsync bs=1 count=442
+          dd if=../u-boot.bin.sd.bin of=base_armbian.img conv=notrunc,fsync bs=512 skip=1 seek=1
+            
           BUILD_DATE=$(date +%Y.%m.%d)
           OUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img"
           mv base_armbian.img "../${OUT_NAME}"

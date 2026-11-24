@@ -128,11 +128,6 @@ jobs:
             ############### 给 p2 扩容 500M 结束 ######################################
 
             #############################################
-
-            echo "正在向镜像写入 792MHz 混合主线 U-Boot（保留 MBR 分区表）..."
-            dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=1 count=442
-            dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=512 skip=1 seek=1
-
             echo "正在关联循环设备并检查修复分区..."
             LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
             sudo partprobe "$LOOP_DEV" 2>/dev/null || true
@@ -439,6 +434,11 @@ jobs:
             sudo umount /mnt/armbian_boot
             sudo losetup -d "${LOOP_DEV}"
 
+            echo "正在向镜像写入 792MHz 混合主线 U-Boot（保留 MBR 分区表）..."
+            dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=1 count=442
+            dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=512 skip=1 seek=1
+            sync
+            
             BUILD_DATE=$(date +%Y.%m.%d)
             OUT_NAME="Armbian_${BUILD_DATE}_s905_p212_LMS.img.gz"
             echo "正在压缩生成最终镜像: $OUT_NAME..."
