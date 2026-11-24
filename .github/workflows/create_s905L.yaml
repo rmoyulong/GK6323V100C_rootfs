@@ -40,24 +40,25 @@ jobs:
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- p212_defconfig
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 
-      #- name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
-        #run: |
-          #mkdir -p fip_output
-          #cd amlogic-boot-fip
-          #chmod +x build-fip.sh
-          #./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
-          #cd ..
-          #ls -lh fip_output/u-boot.bin.sd.bin
-
-      #第二处 如果 lafrite 无法过内存测试（例如频率过高），我们只需把第 2 处的 lafrite 换成 lepotato 即可 
-      - name: 使用 lepotato (32-bit 1GB 低频稳压) BL2 签名封装 FIP 引导
+      - name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
         run: |
           mkdir -p fip_output
           cd amlogic-boot-fip
           chmod +x build-fip.sh
-          ./build-fip.sh lafrite ../u-boot/u-boot.bin ../fip_output
+          ./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
           cd ..
           ls -lh fip_output/u-boot.bin.sd.bin
+
+      #如果 lafrite 无法过内存测试（例如频率过高），我们只需把第 2 处的 lafrite 换成 lepotato 即可
+      #第二处
+      #- name: 使用 lepotato (32-bit 1GB 低频稳压) BL2 签名封装 FIP 引导
+        #run: |
+          #mkdir -p fip_output
+          #cd amlogic-boot-fip
+          #chmod +x build-fip.sh
+          #./build-fip.sh lepotato ../u-boot/u-boot.bin ../fip_output
+          #cd ..
+          #ls -lh fip_output/u-boot.bin.sd.bin
           
       - name: 下载 Armbian S905X 基础镜像
         run: |
