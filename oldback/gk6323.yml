@@ -784,18 +784,23 @@ jobs:
           # 模块支持：作者那版是纯内置内核（/proc/modules 不存在）
           scripts/config --enable MODULES
           scripts/config --enable MODULE_UNLOAD
-          # ★ CIFS（SMB）支持：挂载 NAS 音乐目录。显式编成模块，避免被 slim.config
-          #   裁掉。注意：7.4-rc3 主线的 CIFS_MD4（NTLMv2 内联哈希加速）与新 crypto
-          #   异步改动有 use-after-free，扫描大量小文件时命中 Oops（x24 为 SLUB poison
-          #   值 0xd0d0d0d0...），必须关掉；CIFS_UPCALL 走 keyctl 异步也可能竞态，一并
-          #   关闭。禁用后 NTLMSSP 仍可用，SMB 挂载/guest/中文文件名均不受影响；
-          #   推荐在 fstab 里用 vers=2.1 + soft + cache=loose，避开 SMB3 multichannel
-          #   高风险路径。
-          scripts/config --module CIFS
-          scripts/config --enable CIFS_SMB2
+          # ★ NFS v3 客户端：挂载 NAS 音乐目录（2026-11-24 起放弃 CIFS，整条改走 NFS v3）。
+          #   背景：7.4-rc3 主线的 cifs.ko 在 readdir / 接收缓冲路径存在 use-after-free，
+          #   LMS 扫描大量音乐文件时命中 Oops（崩溃寄存器 x24 为 SLUB poison 值
+          #   0xd0d0d0d0...，崩溃进程是 perl）。关掉 CIFS_MD4 只是收窄命中路径，治不了根；
+          #   这里干脆不再编译整套 cifs.ko，直接绕开。
+          #   NFS_FS 编成模块（=m）：模块不进 Image，不占 boot 分区的 13MiB 上限，
+          #   与原来 CIFS=m 的产物形态一致。NFS_V3 有 prompt、显式打开；SUNRPC /
+          #   LOCKD / NFS_COMMON 是无 prompt 符号，由 NFS_FS / NFS_V3 自动 select，不写。
+          scripts/config --module NFS_FS
+          scripts/config --enable NFS_V3
+          scripts/config --enable NFS_V3_ACL
+          # 同时把 CIFS 一族全部关掉（slim.config 里已关，这里再兜一道）。
+          scripts/config --disable CIFS
           scripts/config --disable CIFS_MD4
           scripts/config --disable CIFS_UPCALL
           scripts/config --disable CIFS_DFS_UPCALL
+          scripts/config --disable SMB_SERVER
           # 启动参数不再在这里置空：kernel.config 叠加层里已带上完整的
           # CONFIG_CMDLINE 与 CONFIG_CMDLINE_FORCE=y（理由见该文件对应段落）。
           # ★ 这里原本是 `scripts/config --set-str CMDLINE ""`。本步骤在 merge 之后
@@ -815,7 +820,8 @@ jobs:
                    MMC_BLOCK MMC_DW_PLTFM \
                    EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
                    NET_VENDOR_HISILICON PHYLIB HISI_FEMAC IPV6 \
-                   USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES CIFS; do
+                   USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES \
+                   NFS_FS NFS_V3; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
               echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
             else
@@ -824,11 +830,12 @@ jobs:
             fi
           done
 
-          # ★ CIFS_MD4/CIFS_UPCALL 必须为 not set：7.4-rc3 主线 NTLMv2 哈希加速
-          #   存在 use-after-free（x24=0xd0d0d0... SLUB poison），扫描大量小文件会 panic。
-          for s in CIFS_MD4 CIFS_UPCALL CIFS_DFS_UPCALL; do
+          # ★ CIFS 一族必须全部 not set（2026-11-24 起改走 NFS v3）：整套 cifs.ko 不再
+          #   编译，从根上绕开 7.4-rc3 主线 cifs 的 use-after-free（x24=0xd0d0d0... SLUB
+          #   poison），LMS 扫描大量音乐文件时不再 panic。SMB_SERVER 也一并关。
+          for s in CIFS CIFS_MD4 CIFS_UPCALL CIFS_DFS_UPCALL SMB_SERVER; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
-              echo "::error::CONFIG_$s 必须关闭（7.4-rc3 主线存在 use-after-free）"
+              echo "::error::CONFIG_$s 必须关闭（已改走 NFS v3，不再编译 CIFS）"
               exit 1
             else
               echo "OK   CONFIG_$s is not set"
@@ -1325,6 +1332,7 @@ jobs:
           - 设备树：@DTB_NAME@，单独刷入 p10（dtbo）分区
             **内核内置 DTB 兜底逻辑：启动时自动校验 x0 中的 dtb 地址，无效则自动读取 0x03FFC000（即 p10 加载地址），不需要修改 bootcmd、不需要特殊启动参数，原厂自动启动流程直接生效**
           - USB 音频：snd-usb-audio 已编译为模块（m），随 modules.tar.gz 一同安装
+          - NFS 客户端：nfs / nfsv3 已编译为模块（m），用于挂载 NAS 音乐目录（不再使用 CIFS）
 
           ## 产物
 
