@@ -76,7 +76,7 @@ jobs:
       UIMAGE_LOADADDR: "0x02000000"
       UIMAGE_ENTRYADDR: "0x02000000"
       # 本仓库自带的板级设备树（逐项取自真机，不再用补丁库的 mv200h 板级）
-      BOARD_DTS: dts/gk6323v100c-chaoge-z71a.dts
+      BOARD_DTS: dts/gk6323v100c-chaoge-z71a-1g.dts
       TARGET_DTB: gk6323v100c-chaoge-z71a.dtb
       # 单板配置层
       FRAGMENT: kernel.config
