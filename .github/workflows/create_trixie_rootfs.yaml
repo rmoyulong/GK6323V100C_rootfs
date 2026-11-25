@@ -268,6 +268,7 @@ jobs:
           apt-get update
 
           apt-get install -y sudo locales exfat-fuse exfatprogs git zip unzip
+          apt install -y wget curl perl-base libio-socket-ssl-perl libcrypt-openssl-rsa-perl libnet-ssleay-perl libxml-parser-perl libgd-gd2-perl libdbd-sqlite3-perl lame flac faad sox libsox-fmt-all
 
           # 添加中文
           # 启用 zh_CN.UTF-8 / en_US.UTF-8（Trixie 默认这两行是注释）
