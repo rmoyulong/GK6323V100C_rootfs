@@ -42,14 +42,14 @@ jobs:
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 
 
-      - name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
-        run: |
-          mkdir -p fip_output
-          cd amlogic-boot-fip
-          chmod +x build-fip.sh
-          ./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
-          cd ..
-          ls -lh fip_output/u-boot.bin.sd.bin
+      #- name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
+        #-run: |
+          #-mkdir -p fip_output
+          #-cd amlogic-boot-fip
+          #-chmod +x build-fip.sh
+          #-./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
+          #-cd ..
+          #-ls -lh fip_output/u-boot.bin.sd.bin
 
       - name: 使用 LibreTech-CC (1GB/2GB 792MHz DDR3) BL2 签名封装 FIP 引导
         run: |
