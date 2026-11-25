@@ -149,7 +149,7 @@ jobs:
             sync
 
             # ================= 挂载 ROOT 分区并安装软件 =================
-            echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite 和 wsdd2..."
+            echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite..."
             sudo mkdir -p /mnt/armbian_root
             sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
             
@@ -182,7 +182,7 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
               apt-get install -y --no-install-recommends dos2unix net-tools cifs-utils ethtool screen wget curl sudo file mtools nginx php8.4-cgi php8.4-fpm usbutils
-              apt-get install -y --no-install-recommends squeezelite wsdd2 alsa-utils alsa-tools ffmpeg locales
+              apt-get install -y --no-install-recommends squeezelite alsa-utils alsa-tools ffmpeg locales
 
               #################### 必要的设置开始 ######################
               # 挂载目录
@@ -297,10 +297,10 @@ jobs:
               EOF
               #################建立启动后运行一次的脚本-结束################################################
 
-              systemctl enable squeezelite wsdd2 || true
+              systemctl enable squeezelite || true
             "
 
-            # 第二轮 chroot：安装 samba / LMS，并在安装完成后再覆盖配置
+            # 第二轮 chroot：安装  LMS，并在安装完成后再覆盖配置
             sudo chroot /mnt/armbian_root /bin/bash -c "
               export DEBIAN_FRONTEND=noninteractive
               apt-get install -y locales 
@@ -344,7 +344,7 @@ jobs:
               sudo tar zxvfp "./golang/plugins.tar.gz" -C "/var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins"
               rm -rf ./golang
 
-              systemctl enable smbd lyrionmusicserver || true
+              systemctl enable lyrionmusicserver || true
               apt-get clean
               rm -rf /var/lib/apt/lists/*
             "
