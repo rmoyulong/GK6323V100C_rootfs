@@ -81,7 +81,7 @@ jobs:
             --arch=arm64 \
             --variant=minbase \
             --components=main,non-free-firmware \
-            --include=systemd,systemd-sysv,dbus,ca-certificates,openssh-server,vsftpd,nginx,php8.4-cgi,php8.4-fpm,php8.4-mysql,procps,iproute2,iputils-ping,net-tools,vim,curl,wget,netplan.io,systemd-resolved,kmod,parted,dosfstools,e2fsprogs,rsync,fake-hwclock,systemd-timesyncd,usbutils,pciutils,evtest,kbd,dos2unix,mtools,firmware-realtek,firmware-iwlwifi,firmware-linux-free,ffmpeg,squeezelite,sudo,alsa-utils,alsa-tools,ethtool,cloud-guest-utils,wireless-regdb,zstd,git,nfs-common,rpcbind \
+            --include=systemd,systemd-sysv,dbus,ca-certificates,openssh-server,vsftpd,nginx,php8.4-cgi,php8.4-fpm,php8.4-mysql,procps,iproute2,iputils-ping,net-tools,vim,curl,wget,netplan.io,systemd-resolved,kmod,parted,dosfstools,e2fsprogs,rsync,fake-hwclock,systemd-timesyncd,usbutils,pciutils,evtest,kbd,dos2unix,mtools,firmware-realtek,firmware-iwlwifi,firmware-linux-free,ffmpeg,squeezelite,sudo,alsa-utils,alsa-tools,ethtool,cloud-guest-utils,wireless-regdb,zstd,git,nfs-common,rpcbind,jq \
             "$DEBIAN_SUITE" "$ROOTFS_DIR" \
             "$MIRROR"
 
@@ -287,18 +287,31 @@ jobs:
           locale -a | grep -qi '^zh_CN\.utf8$' || { echo 'FATAL: zh_CN.UTF-8 not generated'; exit 1; }
 
 
-          git clone --depth 1 https://github.com/rmoyulong/packages_lang_golang golang
+          #git clone --depth 1 https://github.com/rmoyulong/packages_lang_golang golang
 
           rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
 
           mkdir -p /var/lib/squeezeboxserver/prefs
           mkdir -p /var/lib/squeezeboxserver/cache
           mkdir -p /var/log/squeezeboxserver
+          
+          # Fetch latest LMS arm/arm64 releases
+            arm_IMG_URL=$(curl -sL "https://lyrion.org/downloads/#v920-development-build" \
+              | jq -r '.[] 
+                | select(.tag_name | test("lyrionmusicserver_9.2.0"; "i")) 
+                | .assets[] 
+                | select(.name | test("lyrionmusicserver_9.2.0~*_arm.deb\\.img\\.gz$")) 
+                | .browser_download_url' \
+              | head -n 1)
+              
+            echo $arm_IMG_URL
+           wget $arm_IMG_URL -O /tmp/lms_arm.deb
 
-          dpkg -i ./golang/lms_arm.deb || true
+
+          dpkg -i ./tmp/lms_arm.deb || true
           apt-get --fix-broken install -y
 
-          rm -rf ./golang
+          #rm -rf ./golang
           EOF
           sudo chmod +x "$ROOTFS_DIR/tmp/install-lms.sh"
           sudo chroot "$ROOTFS_DIR" /bin/bash /tmp/install-lms.sh
