@@ -181,7 +181,7 @@ jobs:
             sudo chroot /mnt/armbian_root /bin/bash -c "
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
-              apt-get install -y --no-install-recommends dos2unix qemu-utils dosfstools dump parted bzip2 kpartx build-essential net-tools cifs-utils bind9-dnsutils ethtool screen wget curl sudo file mtools p7zip-full git nginx php8.4-cgi php8.4-fpm php8.4-mysql usbutils pciutils e2fsprogs rsync
+              apt-get install -y --no-install-recommends dos2unix net-tools cifs-utils ethtool screen wget curl sudo file mtools nginx php8.4-cgi php8.4-fpm usbutils
               apt-get install -y --no-install-recommends squeezelite wsdd2 alsa-utils alsa-tools ffmpeg locales
 
               #################### 必要的设置开始 ######################
@@ -207,6 +207,14 @@ jobs:
               sudo cp /tmp/patch/locale.conf /etc/default/locale.conf
               sudo cp /tmp/patch/locale.gen /etc/locale.gen
               sudo cp /tmp/patch/locale.conf /etc/locale.conf
+              
+              sudo tee "/etc/default/armbian-zram-config" > /dev/null <<'EOF'
+              ENABLED=true
+              ZRAM_PERCENTAGE=120
+              MEM_LIMIT_PERCENTAGE=100
+              ZRAM_MAX_DEVICES=4
+              SWAP_ALGORITHM=zstd
+              EOF
 
               sudo mkdir -p "/etc/sysctl.d"
               sudo tee "/etc/sysctl.d/99-lms-network.conf" > /dev/null <<'EOF'
@@ -220,6 +228,13 @@ jobs:
               EOF
               echo "----- 99-lms-network.conf -----"
               cat "/etc/sysctl.d/99-lms-network.conf"
+              
+              sudo tee "/etc/sysctl.d/97-zram-opt.conf" > /dev/null <<'EOF'
+              vm.swappiness=150
+              vm.watermark_boost_factor=0
+              vm.watermark_scale_factor=125
+              vm.page-cluster=0
+              EOF
 
               # .bashrc 正确路径是 /root/.bashrc
               sudo cp /tmp/patch/.bashrc /root/.bashrc
@@ -288,7 +303,7 @@ jobs:
             # 第二轮 chroot：安装 samba / LMS，并在安装完成后再覆盖配置
             sudo chroot /mnt/armbian_root /bin/bash -c "
               export DEBIAN_FRONTEND=noninteractive
-              apt-get install -y sudo samba samba-common-bin smbclient locales exfat-fuse exfatprogs zip unzip
+              apt-get install -y locales 
 
               # 添加中文
               locale-gen zh_CN.UTF-8
@@ -302,11 +317,6 @@ jobs:
 
               dpkg -i ./golang/lms_arm.deb || true
               apt-get --fix-broken install -y
-
-              # ---- 安装完成后再覆盖 samba 配置，避免被包 postinst 覆盖 ----
-              sudo mkdir -p "/etc/samba"
-              sudo cp /tmp/patch/smb.conf /etc/samba/smb.conf
-              testparm -s /etc/samba/smb.conf || echo "警告：smb.conf 校验失败"
 
               # ---------- squeezelite 的 ALSA 输出 ----------
               sudo tee "/etc/default/squeezelite" > /dev/null <<'EOF'
