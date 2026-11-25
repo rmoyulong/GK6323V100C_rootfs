@@ -211,7 +211,7 @@ jobs:
 
           # 修正为中文环境
           sudo mkdir -p "$ROOTFS_DIR/etc/default"
-          sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/default/locale.conf
+          sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/default/locale
           sudo cp ${{ github.workspace }}/patch/locale.gen $ROOTFS_DIR/etc/locale.gen
           sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/locale.conf
 
@@ -270,7 +270,22 @@ jobs:
           apt-get install -y sudo locales exfat-fuse exfatprogs git zip unzip
 
           # 添加中文
-          locale-gen zh_CN.UTF-8
+          # 启用 zh_CN.UTF-8 / en_US.UTF-8（Trixie 默认这两行是注释）
+          sed -i 's/^#[[:space:]]*zh_CN\.UTF-8[[:space:]]\+UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+          grep -q '^zh_CN\.UTF-8[[:space:]]\+UTF-8' /etc/locale.gen || echo 'zh_CN.UTF-8 UTF-8' >> /etc/locale.gen
+          sed -i 's/^#[[:space:]]*en_US\.UTF-8[[:space:]]\+UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
+
+          # 直接生成数据，不依赖 locale-gen 的参数匹配逻辑
+          LC_ALL=C localedef -i zh_CN -f UTF-8 zh_CN.UTF-8
+          LC_ALL=C localedef -i en_US -f UTF-8 en_US.UTF-8
+          LC_ALL=C locale-gen
+
+          # 写变量声明（这一步写的才是 /etc/default/locale）
+          update-locale LANG=zh_CN.UTF-8 LANGUAGE=zh_CN:zh LC_MESSAGES=zh_CN.UTF-8
+
+          # 断言：没生成就让构建直接失败，不再"看着成功其实没生成"
+          locale -a | grep -qi '^zh_CN\.utf8$' || { echo 'FATAL: zh_CN.UTF-8 not generated'; exit 1; }
+
 
           git clone --depth 1 https://github.com/rmoyulong/packages_lang_golang golang
 
