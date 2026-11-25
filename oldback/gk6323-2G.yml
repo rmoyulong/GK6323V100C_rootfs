@@ -1,0 +1,1356 @@
+name: GK6323V100C 主线内核自动构建 - 2G 内存版
+
+# ============================================================
+# 本文件与 hi3798mv100 仓库的 hisi.yml 逐段同构：
+#   拉源码 → 打 histb 补丁 → 部署配置并逐项自检 → 编译
+#   → 编译自带设备树、追加到内核镜像、包 uImage
+#   → 收模块 → 上传产物 → 发布 Release
+#
+# 与 hisi.yml 的差别只有 5 处，其余照搬：
+#   1) ARCH=arm64，交叉工具链 aarch64-linux-gnu-
+#   2) 内核是 arch/arm64/boot/Image，uImage 用 -A arm64 打包
+#   3) 设备树用它自己那份（dts/gk6323v100c-chaoge-z71a.dts，逐项取自
+#      真机），追加到内核镜像末尾，追加处校验魔数 d00dfeed；同时把
+#      该 dtb 单独放进 Release，必须写入 dtbo 分区（/dev/mmcblk0p10）
+#   4) 单板配置多一项 CONFIG_SND_USB_AUDIO=m —— 本仓库存在的理由
+#   5) 刷写分区：boot = /dev/mmcblk0p15（60M，起始 112M）
+#
+# 基线（与 mv100 仓库逐字一致）：
+#   KERNEL_VERSION = 7.4-rc4
+#   BASE_SHA       = 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
+# 注意：下面 env 里的两个值是**兜底值**。流水线会先拉补丁库、读它自己的
+# baseline 文件，以库里的值为准 —— 补丁库更新后不必再改本文件。
+#
+# 三点必须知道的事（详见 README）：
+#   a) 这台不是海思 MV200H。真机实测为 4×Cortex-A55 + GICv3 +
+#      国科私有 CRU，所以设备树用仓库自带的 gk6323v100c-chaoge-z71a.dts，
+#      **不再**用补丁库里海思 A53 的 mv200h 板级 dts（用错会红灯循环重启）。
+#   b) 本基线是主线内核，不是作者那版国科 BSP 内核（6.18.46-gk6323-debian）。
+#      产出内核版本号因此是 7.4.x，模块装到 /lib/modules/7.4.x 下 ——
+#      内核与模块必须一起替换。
+#   c) 真机运行的设备树来自 dtbo 分区（作者 boot.img 内没有 dtb）。因此
+#      编译出的 dtb **必须写入 dtbo 分区**才能生效；内嵌的那份是冗余备份。
+#      注意：legacy uImage 的 bootm 不会解析「追加在 Image 末尾的 dtb」，
+#      要让内核拿到设备树，必须 `bootm <kernel> - <fdt>` 显式传第三个参数。
+#
+# 纪律（踩过坑，勿犯）：
+#   set -euo pipefail 之下，任何「赋值 + 管道」都必须兜底。写成
+#       VAR="$( … | grep … )"      或      VAR="$( … | head -1 )"
+#   时，grep 零匹配（或 head 提前退出引发 SIGPIPE）会让整条管道返回非零，
+#   赋值命令随即被判失败，set -e 当场杀掉步骤 —— 之前打的诊断一个字都留不下，
+#   日志里只剩 "Process completed with exit code 1"。
+#   已因此连踩三次：`yes "" | make olddefconfig`、从 .config 取首行、命令行回显。
+#   末尾一律补 `|| true`；漏网的本文件「工作流静态自检」步骤会拦下。
+# ============================================================
+
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - '.github/workflows/gk6323-2G.yml'
+      - 'kernel.config'
+      - 'slim.config'
+      - 'apply_histb_patches.sh'
+      - 'dts/*.dts'
+      - 'patches/*.patch'
+      - 'dts/check-dts.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-gk6323v100c:
+    name: 编译 GK6323V100C 内核+模块
+    runs-on: ubuntu-22.04
+    env:
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      KERNEL_REPO: https://github.com/torvalds/linux.git
+      # 补丁仓库（与 hi3798mv100 用同一个库；本机只取其 i2c/femac 等共用 IP 修正）
+      PATCHES_REPO: https://github.com/rmoyulong/histb-mainline_patches
+      # 兜底值；会被补丁库 baseline 文件里的实际值覆盖（见「拉取补丁仓库并读取基线」）
+      PATCHES_BASE_SHA: a4d7daea71be591034445c17d4d81132a1785a12
+      PATCHES_KERNEL_VERSION: 7.4-rc4
+      # uImage 头内地址，与实机 boot.img 实测一致
+      UIMAGE_LOADADDR: "0x02000000"
+      UIMAGE_ENTRYADDR: "0x02000000"
+      # 本仓库自带的板级设备树（逐项取自真机，不再用补丁库的 mv200h 板级）
+      BOARD_DTS: dts/gk6323v100c-chaoge-z71a.dts
+      TARGET_DTB: gk6323v100c-chaoge-z71a.dtb
+      # 单板配置层
+      FRAGMENT: kernel.config
+      # 实机分区：boot 起始 112M、长 60M；dtbo 起始 50M、长 2M
+      BOOT_PART: /dev/mmcblk0p15
+      BOOT_PART_LIMIT_MB: "60"
+      DTBO_PART: /dev/mmcblk0p10
+      # ★ 与上面那个 60M 不是一回事：U-Boot 启动内核前会检查 uImage 的数据大小
+      #   （ih_size），超过它编译时的 CONFIG_SYS_BOOTM_LEN 就打印
+      #     "Image too large: increase CONFIG_SYS_BOOTM_LEN"
+      #   并复位（表现为红灯循环重启）。已确认的两个边界：
+      #     · 下界 —— 作者原厂 boot.img 14,028,808 字节（ih_size 14,028,744）
+      #       能正常启动 → 上限 ≥ 13.38MiB；
+      #     · 上界 —— 本仓库上一版约 15MB 的镜像被同一台机器拒绝 → 上限 < 15MB。
+      #   故真实上限落在 (13.38MiB, 15MB) 之间，最可能是 14MiB（0xE00000）。
+      #   U-Boot 的 bootcmd 一次只读 30720 块 = 15MiB，读窗口也在这条线上。
+      #   这里取 13MiB 作为目标：低于已确认能启动的 13.38MiB，留出余量；
+      #   超过就中止，不产出刷进去会变砖的镜像。
+      #   注意：不要指望 gzip 绕过去 —— bootm 的 gzip 分支把 CONFIG_SYS_BOOTM_LEN
+      #   当作**解压输出缓冲上限**，解压后的 Image 仍必须 ≤ 该上限。
+      BOOT_IMAGE_MAX_MB: "13"
+      START_DIY_PATCH: false
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 校验必要文件存在
+        run: |
+          set -euo pipefail
+          for f in apply_histb_patches.sh "$FRAGMENT" slim.config "$BOARD_DTS" dts/check-dts.py; do
+            [ -f "$f" ] || { echo "::error::根目录缺少 $f"; exit 1; }
+          done
+          chmod +x apply_histb_patches.sh
+          ls -lh apply_histb_patches.sh "$FRAGMENT" slim.config "$BOARD_DTS" dts/check-dts.py
+          ls -lh patches/ 2>/dev/null || echo "（仓库根目录无 patches/，首次运行时请新建）"
+
+      - name: 工作流静态自检（防 set -e + pipefail 下的裸管道赋值）
+        run: |
+          set -euo pipefail
+          # 本步骤检查 workflow 自身，专门拦一种很难定位的失败：
+          #   set -euo pipefail 之下，写成
+          #       VAR="$( … | grep … )"   或   VAR="$( … | head -1 )"
+          #   时，grep 零匹配、或 head 提前退出把上游打成 SIGPIPE，整条管道返回非零，
+          #   这条赋值命令即被判失败 —— set -e 当场杀掉整个步骤，诊断一个字都留不下，
+          #   日志里只剩一句 "Process completed with exit code 1"。
+          #   本项目已因此连踩三次：`yes "" | make olddefconfig`（SIGPIPE）、从 .config
+          #   取行、以及 2026-11-19 那次的命令行回显（clk_ignore_unused / rootwait 是
+          #   「无值标志」，grep 必然零匹配，只打了 earlycon / console 两行就断）。
+          # 规则：赋值语句的命令替换里，管道后紧跟 grep 或 head 的，末尾必须有兜底。
+          #   ★ 注意区分「管道 |」与「正则里的 |」—— 后者后面不跟空格（如 `(a|b)`），
+          #     所以模式写成 `\|[[:space:]]+(grep|head)`，不会误伤 $(lookup "^(A=|# B)")
+          #     这类调用，也不会误伤 `od … | tr …`。
+          PAT='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="?\$\(.*\|[[:space:]]+(grep|head)'
+          BAD="$(grep -nE "$PAT" .github/workflows/gk6323.yml | grep -v '|| true' | grep -v '|| echo' || true)"
+          if [ -n "$BAD" ]; then
+            echo "::error::发现未兜底的管道赋值 —— set -e + pipefail 下会静默杀掉步骤。请在命令替换末尾补 ' || true'："
+            printf '%s\n' "$BAD"
+            exit 1
+          fi
+          echo "OK   未发现未兜底的管道赋值"
+
+      - name: 设备树静态校验（无 dtc 也能查出漏分号、label 未定义、地址不符）
+        run: |
+          set -euo pipefail
+          python3 dts/check-dts.py "$BOARD_DTS"
+
+      - name: 安装 ARM64 交叉编译依赖
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            bc bison flex libssl-dev libncurses5-dev ccache kmod \
+            u-boot-tools device-tree-compiler quilt git wget xz-utils \
+            cpio rsync zstd
+          aarch64-linux-gnu-gcc --version | sed -n '1p'
+          dtc --version
+
+      - name: 拉取补丁仓库并读取基线
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$PATCHES_REPO" histb-patches
+          cd histb-patches
+
+          echo "=== 补丁库 baseline 原文 ==="
+          if [ -f baseline ]; then
+            cat baseline
+          else
+            echo "(补丁库没有 baseline 文件，沿用 workflow 里的兜底值)"
+          fi
+
+          # 兼容四种写法：KEY = v / KEY=v / "# KEY = v" / KEY := v
+          #   ★ 补丁库 rc3 起用的是 "KERNEL_VERSION := 7.4-rc4"（make 写法）。
+          #     只认 "=" 的正则在它上面取到空串 → 静默回落到本文件底部的兜底值，
+          #     「自动读基线」于是形同失效，库里换版本也不会跟着动。
+          #   ★ 末尾 || true：baseline 不存在时 sed 返回非零，否则 set -e 直接杀步骤。
+          get() { sed -n "s/^[#[:space:]]*$1[[:space:]]*:*=[[:space:]]*//p" baseline 2>/dev/null | head -1 | tr -d '[:space:]' || true; }
+          KV="$(get KERNEL_VERSION)"; SHA="$(get BASE_SHA)"
+          [ -n "$KV" ]  || KV="$PATCHES_KERNEL_VERSION"
+          [ -n "$SHA" ] || SHA="$PATCHES_BASE_SHA"
+
+          echo "=== 本次采用的基线 ==="
+          echo "KERNEL_VERSION = $KV"
+          echo "BASE_SHA       = $SHA"
+          echo "PATCHES_KERNEL_VERSION=$KV" >> "$GITHUB_ENV"
+          echo "PATCHES_BASE_SHA=$SHA"      >> "$GITHUB_ENV"
+
+          echo "=== 补丁库布局检查（series 或根目录平铺两种都支持）==="
+          mapfile -t patches < <(find . -name '*.patch' -type f | LC_ALL=C sort -V)
+          echo "补丁总数：${#patches[@]}"
+          if [ "${#patches[@]}" -eq 0 ]; then
+            echo "::error::补丁库里没有 .patch 文件"
+            exit 1
+          fi
+          if [ -f series ]; then
+            echo "存在 series，脚本将按 series 顺序应用"
+          else
+            echo "无 series，脚本将按文件名序号排序应用"
+          fi
+
+      - name: 拉取内核源码（基线 commit 取自补丁库 baseline）
+        run: |
+          set -euo pipefail
+          echo "拉取内核基线：$PATCHES_KERNEL_VERSION (commit: $PATCHES_BASE_SHA)"
+          git clone --filter=blob:none --no-checkout "$KERNEL_REPO" linux_build
+          cd linux_build
+          git checkout -q "$PATCHES_BASE_SHA"
+
+          # 规范化：7.4.0-rc3 -> 7.4-rc4，使两种写法等价
+          norm() { printf '%s' "$1" | sed -E 's/^([0-9]+\.[0-9]+)\.0/\1/'; }
+          ACT="$(make -s kernelversion)"
+          EXP="$PATCHES_KERNEL_VERSION"
+          echo "实际内核版本：$ACT ；baseline 期望：$EXP"
+          if [ "$(norm "$ACT")" != "$(norm "$EXP")" ]; then
+            echo "::error::版本不匹配：期望 $EXP，实际 $ACT —— 请核对补丁库 baseline 里的 BASE_SHA 是否与 KERNEL_VERSION 配套"
+            exit 1
+          fi
+          echo "版本校验通过：$ACT"
+
+      - name: 应用 histb 补丁（调用仓库根目录 apply_histb_patches.sh）
+        run: |
+          set -euo pipefail
+          cd linux_build
+          # 该脚本自判：有 series 按 series，没有则按文件名序号应用全部 *.patch；
+          # 等价于 quilt --fuzz=0，遇冲突即中止并回滚，不会静默产出缺补丁的内核
+          PATCHES_DIR="../histb-patches" CI=true bash ../apply_histb_patches.sh -y
+          echo "=== 补丁后确认 ===（本仓库设备树自带，不再要求补丁库含 mv200h 板级 dts）"
+          ls arch/arm64/boot/dts/hisilicon/ | head -20 || true
+
+
+      - name: 部署 GK6323V100C CRG 门控与复位驱动
+        run: |
+          set -euo pipefail
+          cd linux_build
+          # 为什么必须是自写驱动：dts 的 cru 节点 compatible 是 goke,gk6323v100c-crg
+          #   （reg f8a22000，0x400，#reset-cells = <2>），femac 节点写着
+          #   resets = <&cru 0xd0 3>。若没有驱动认领它，of_reset_control_get 取不到
+          #   "mac" 复位，hisi_femac probe 直接失败 —— 现象就是 eth0 整个消失。
+          #   原版工作流里"sed 给 crg-hi3798mv200.c 注入 FEPHY 时钟"那条锚点在该文件
+          #   根本不存在（也没有 priv 变量），sed 静默空操作，FEPHY 时钟从未开。
+          #
+          # 本驱动用 platform_driver + subsys_initcall（不依赖 clk-of 私有宏）：
+          # subsys_initcall 在所有 device_initcall 外设（femac/ehci/ohci/i2c/es8316）
+          # probe 前执行，时钟门一定先开；显式开 femac/ehci/ohci/i2c/eMMC/aiao/uart
+          # 13 路时钟门（read-modify-write，不清其他位），不会按死 U-Boot 已开的模块。
+          # 寄存器位号取自海思 BSP hi3798mv310-clock.h 与 clk-hiusb2.c（与 GK6323V100C 同源）：
+          #   0x08 (PERI_CRG0x08 / UART0 位)        : BIT(0) 时钟
+          #   0x68 (PERI_CRG26_UART)               : UART0 复位
+          #   0x6c (PERI_CRG27_I2C)                : I2C0 clk@4 rst@5, I2C1 clk@8 rst@9, I2C2 clk@12 rst@13
+          #   0xa0 (PERI_CRG40_SDIO1 = eMMC)       : clk@0,1; rst 相关位由 U-Boot 保持
+          #   0xb8 (PERI_CRG46_USB2CTRL)           : BUS@0, OHCI48M@1, OHCI12M@2, UTMI@3, HST_PHY@4, UTMI0@5;
+          #                                         BUS_SRST@12, UTMI0_SRST@13, HST_PHY_SRST@16
+          #   0xbc (PERI_CRG47_USB2PHY)            : PHY_REF@0; PHY_SRST@4, PHY0_TREQ@8
+          #   0xcc (PERI_CRG51_GSF)               : 千兆口 higmac 寄存器（本板百兆口不用，只读不碰）
+          #   0x118 (PERI_CRG70_AIAO)              : AIAO clk; rst@4
+          #   0x388 (FEPHY 寄存器)                 : FEPHY 参考时钟（真机实测 0xf8a22388 = 0x1）
+          #
+          # 复位语义：assert 置位、deassert 清位（与海思 reset-hisilicon.c 一致），本驱动在
+          # probe 时主动 deassert 所有下面的外设复位，让它们从 U-Boot 交棒的"未知/复位中"
+          # 状态脱离出来。femac 驱动之后会自行对 "mac"（0xd0 上的位，若该偏移不存在即空操作）
+          # 做 assert-delay-deassert 时序，由 reset_controller 处理。
+          cat > drivers/clk/hisilicon/crg-gk6323v100c.c << 'CEOF'
+          // SPDX-License-Identifier: GPL-2.0-only
+          /*
+           * 国科微 GK6323V100C —— CRG 门控 + 复位控制器
+           *
+           * platform_driver + subsys_initcall：在所有 device_initcall 外设
+           * (femac/ehci/ohci/i2c/es8316/mmc) probe 之前执行，先开时钟门、释放复位。
+           * 寄存器位号与海思 hi3798mv310 BSP 同源，已按真机偏移重新核对。
+           */
+          #include <linux/bitops.h>
+          #include <linux/delay.h>
+          #include <linux/err.h>
+          #include <linux/gfp.h>
+          #include <linux/io.h>
+          #include <linux/init.h>
+          #include <linux/kernel.h>
+          #include <linux/module.h>
+          #include <linux/of.h>
+          #include <linux/of_address.h>
+          #include <linux/platform_device.h>
+          #include <linux/reset-controller.h>
+          #include <linux/slab.h>
+          #include <linux/spinlock.h>
+          #include <linux/types.h>
+
+          struct gk_bit { u32 off; u32 bit; const char *name; };
+
+          /* 时钟门：probe 时置 1 打开 */
+          static const struct gk_bit gk_clocks[] = {
+          	{ 0x08,  0, "uart0_clk"    },    /* UART0 控制台 */
+          	{ 0x6c,  4, "i2c0_clk"     },    /* I2C0 总线（ES8316 在 0x10） */
+          	{ 0x6c,  8, "i2c1_clk"     },    /* I2C1 总线 */
+          	{ 0x6c, 12, "i2c2_clk"     },    /* I2C2 总线（RTC 在 0x51） */
+          	{ 0xa0,  0, "emmc_biu"     },    /* eMMC 总线时钟 */
+          	{ 0xa0,  1, "emmc_ciu"     },    /* eMMC 卡时钟 */
+          	{ 0xb8,  0, "usb_bus"      },    /* USB2 AHB 总线 */
+          	{ 0xb8,  1, "usb_ohci48m"  },    /* USB2 OHCI 48M */
+          	{ 0xb8,  2, "usb_ohci12m"  },    /* USB2 OHCI 12M */
+          	{ 0xb8,  3, "usb_utmi"     },    /* USB2 UTMI 时钟 */
+          	{ 0xb8,  4, "usb_hst_phy"  },    /* USB2 Host PHY 时钟 */
+          	{ 0xb8,  5, "usb_utmi0"    },    /* USB2 UTMI0 */
+          	{ 0xbc,  0, "usb_phy_ref"  },    /* USB2 PHY 参考时钟 */
+          	{ 0xcc,  0, "eth51_0"      },    /* PERI_CRG51 保留位 */
+          	{ 0xcc,  1, "eth51_1"      },    /* PERI_CRG51 保留位 */
+          	{ 0xcc,  2, "eth51_2"      },    /* PERI_CRG51 保留位 */
+          	{ 0xd0,  0, "femac_if"     },    /* ETH 总线/接口时钟：MDIO 寄存器访问靠它 */
+          	{ 0xd0,  1, "femac_mac"    },    /* ETH MAC 内核时钟（真机实测 0xf8a220d0 = 0x3） */
+          	{ 0x388, 0, "fephy_clk"    },    /* 内置 FEPHY 时钟（真机实测 0xf8a22388 = 0x1） */
+          	{ 0x118, 0, "aiao_mod"     },    /* AIAO 音频模块时钟 */
+          };
+
+          /*
+           * 软复位位：probe 时显式 deassert（清 0），保证外设不是被按住的状态。
+           * 写 1 = 进入复位；写 0 = 退出复位（海思惯例，与 reset-hisilicon.c assert/deassert 一致）。
+           * eMMC 相关复位位不主动动：U-Boot 已在跑数据通路，再拉一次复位会把正在
+           * 进行的 MMC 命令打断，历史上出现过 "Timeout resetting block" 就是这个。
+           */
+          static const struct gk_bit gk_resets[] = {
+          	{ 0x6c,  5, "i2c0_rst"     },
+          	{ 0x6c,  9, "i2c1_rst"     },
+          	{ 0x6c, 13, "i2c2_rst"     },
+          	{ 0xb8, 12, "usb_bus_rst"  },
+          	{ 0xb8, 13, "usb_utmi_rst" },
+          	{ 0xb8, 16, "usb_hst_rst"  },
+          	{ 0xbc,  4, "usb_phy_rst"  },
+          	{ 0xbc,  8, "usb_phy0_trst"},
+          	{ 0xd0,  3, "femac_rst"    },    /* ETH MAC 软复位：清 0 = 释放 */
+          	{ 0x118, 4, "aiao_rst"     },
+          };
+
+          struct gk_crg_priv {
+          	void __iomem *base;
+          	spinlock_t    lock;
+          	struct reset_controller_dev rcdev;
+          };
+
+          static inline struct gk_crg_priv *to_gk_crg(struct reset_controller_dev *rc)
+          {
+          	return container_of(rc, struct gk_crg_priv, rcdev);
+          }
+
+          /*
+           * reset 编码与海思 reset-hisilicon.c 完全一致：
+           *   id = (offset << 16) | (bit << 0)  —— 由 of_xlate 从 dts 的两个 cell 编出来
+           *   assert = 置位，deassert = 清位
+           * dts 里写 resets = <&cru 0xd0 3> 即 femac_rst。
+           */
+          #define HISI_RESET_OFF_SHIFT 16
+          #define HISI_RESET_BIT_SHIFT 0
+          static int gk_reset_of_xlate(struct reset_controller_dev *rcdev,
+          		       const struct of_phandle_args *rs)
+          {
+          	u32 off, bit;
+          	if (WARN_ON(rs->args_count != 2))
+          		return -EINVAL;
+          	off = rs->args[0] & 0xfff;
+          	bit = rs->args[1] & 0x1f;
+          	return (off << HISI_RESET_OFF_SHIFT) | (bit << HISI_RESET_BIT_SHIFT);
+          }
+
+          static int gk_reset_assert(struct reset_controller_dev *rc, unsigned long id)
+          {
+          	struct gk_crg_priv *priv = to_gk_crg(rc);
+          	u32 off = (id >> HISI_RESET_OFF_SHIFT) & 0xfff;
+          	u32 bit = (id >> HISI_RESET_BIT_SHIFT) & 0x1f;
+          	unsigned long flags;
+          	u32 val;
+          	spin_lock_irqsave(&priv->lock, flags);
+          	if (off == 0x388 && bit == 4) {
+          		/* mv200：PHY 复位期间 MAC 侧时钟必须关闭 */
+          		val = readl_relaxed(priv->base + 0xd0);
+          		writel_relaxed(val & ~(BIT(0) | BIT(1)), priv->base + 0xd0);
+          	}
+          	val = readl_relaxed(priv->base + off);
+          	writel_relaxed(val | BIT(bit), priv->base + off);
+          	spin_unlock_irqrestore(&priv->lock, flags);
+          	return 0;
+          }
+
+          static int gk_reset_deassert(struct reset_controller_dev *rc, unsigned long id)
+          {
+          	struct gk_crg_priv *priv = to_gk_crg(rc);
+          	u32 off = (id >> HISI_RESET_OFF_SHIFT) & 0xfff;
+          	u32 bit = (id >> HISI_RESET_BIT_SHIFT) & 0x1f;
+          	unsigned long flags;
+          	u32 val;
+          	spin_lock_irqsave(&priv->lock, flags);
+          	val = readl_relaxed(priv->base + off);
+          	writel_relaxed(val & ~BIT(bit), priv->base + off);
+          	readl_relaxed(priv->base + off); /* 屏障 */
+          	if (off == 0x388 && bit == 4) {
+          		/* PHY 复位释放后恢复 MAC 侧时钟 */
+          		val = readl_relaxed(priv->base + 0xd0);
+          		writel_relaxed(val | BIT(0) | BIT(1), priv->base + 0xd0);
+          	}
+          	spin_unlock_irqrestore(&priv->lock, flags);
+          	return 0;
+          }
+
+          static int gk_reset_status(struct reset_controller_dev *rc, unsigned long id)
+          {
+          	struct gk_crg_priv *priv = to_gk_crg(rc);
+          	u32 off = (id >> HISI_RESET_OFF_SHIFT) & 0xfff;
+          	u32 bit = (id >> HISI_RESET_BIT_SHIFT) & 0x1f;
+          	return !!(readl_relaxed(priv->base + off) & BIT(bit));
+          }
+
+          static const struct reset_control_ops gk_reset_ops = {
+          	.assert   = gk_reset_assert,
+          	.deassert = gk_reset_deassert,
+          	.status   = gk_reset_status,
+          };
+
+          static int gk_crg_probe(struct platform_device *pdev)
+          {
+          	struct device *dev = &pdev->dev;
+          	struct device_node *np = dev->of_node;
+          	struct gk_crg_priv *priv;
+          	char log[384] = "";
+          	int pos = 0, i, ret;
+          	unsigned long flags;
+          	u32 val;
+
+          	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+          	if (!priv)
+          		return -ENOMEM;
+          	priv->base = devm_of_iomap(dev, np, 0, NULL);
+          	if (IS_ERR_OR_NULL(priv->base)) {
+          		dev_err(dev, "gk6323v100c-crg: iomap failed\n");
+          		return -ENXIO;
+          	}
+          	spin_lock_init(&priv->lock);
+          	platform_set_drvdata(pdev, priv);
+
+          	/* 1) 先开时钟门 */
+          	spin_lock_irqsave(&priv->lock, flags);
+          	for (i = 0; i < ARRAY_SIZE(gk_clocks); i++) {
+          		const struct gk_bit *g = &gk_clocks[i];
+          		val = readl_relaxed(priv->base + g->off);
+          		writel_relaxed(val | BIT(g->bit), priv->base + g->off);
+          	}
+          	spin_unlock_irqrestore(&priv->lock, flags);
+
+          	/* 2) 再 deassert 软复位：USB PHY 复位需时钟稳定后延时 */
+          	udelay(20);
+          	spin_lock_irqsave(&priv->lock, flags);
+          	for (i = 0; i < ARRAY_SIZE(gk_resets); i++) {
+          		const struct gk_bit *g = &gk_resets[i];
+          		val = readl_relaxed(priv->base + g->off);
+          		writel_relaxed(val & ~BIT(g->bit), priv->base + g->off);
+          	}
+          	readl_relaxed(priv->base); /* 屏障，保证写生效 */
+          	spin_unlock_irqrestore(&priv->lock, flags);
+          	udelay(100); /* USB/EHCI PHY PLL 锁定时间 */
+
+          	/*
+          	 * 3) FEPHY 复位不再由本驱动做：dts 已给 femac 补上
+          	 *      resets = <&cru 0xd0 3>, <&cru 0x388 4>;
+          	 *      reset-names = "mac", "phy";
+          	 *    hisi_femac 会按 hisilicon,phy-reset-delays-us
+          	 *    （10ms/10ms/500ms）对 0x388 bit4 做一次完整 PHY 复位，
+          	 *    并在复位前后经下面的 gk_reset_assert/deassert 关闭、
+          	 *    重开 MAC 侧时钟（0xd0 bit0/1）——这正是 mv200 硬件要求。
+          	 *    这里只保证 FEPHY 时钟门（0x388 bit0）已由上面的
+          	 *    gk_clocks 打开（由他自己释放或按时序复位）。
+          	 */
+
+          	for (i = 0; i < ARRAY_SIZE(gk_clocks); i++)
+          		pos += snprintf(log + pos, sizeof(log) - pos,
+          				"%s%s", i ? "," : "", gk_clocks[i].name);
+          	pr_info("gk6323v100c-crg f8a22000: clk [%s]\n", log);
+
+          	pos = 0;
+          	for (i = 0; i < ARRAY_SIZE(gk_resets); i++)
+          		pos += snprintf(log + pos, sizeof(log) - pos,
+          				"%s%s", i ? "," : "", gk_resets[i].name);
+          	pr_info("gk6323v100c-crg f8a22000: rst released [%s]\n", log);
+
+          	priv->rcdev.owner           = THIS_MODULE;
+          	priv->rcdev.ops             = &gk_reset_ops;
+          	priv->rcdev.of_node         = np;
+          	priv->rcdev.nr_resets       = 0x1000U << 16;
+          	priv->rcdev.of_reset_n_cells = 2;
+          	priv->rcdev.of_xlate        = gk_reset_of_xlate;
+          	ret = devm_reset_controller_register(dev, &priv->rcdev);
+          	if (ret) {
+          		dev_err(dev, "gk6323v100c-crg: reset_controller_register failed %d\n", ret);
+          		return ret;
+          	}
+          	return 0;
+          }
+
+          static const struct of_device_id gk_crg_of_match[] = {
+          	{ .compatible = "goke,gk6323v100c-crg" },
+          	{ .compatible = "goke,gk6323v100c-cru" },
+          	{ /* sentinel */ }
+          };
+          MODULE_DEVICE_TABLE(of, gk_crg_of_match);
+
+          static struct platform_driver gk_crg_driver = {
+          	.probe = gk_crg_probe,
+          	.driver = {
+          		.name           = "gk6323v100c-crg",
+          		.of_match_table = gk_crg_of_match,
+          	},
+          };
+
+          /* subsys_initcall：在 device_initcall 外设 probe 前执行 */
+          static int __init gk_crg_init(void)
+          {
+          	return platform_driver_register(&gk_crg_driver);
+          }
+          subsys_initcall(gk_crg_init);
+
+          static void __exit gk_crg_exit(void)
+          {
+          	platform_driver_unregister(&gk_crg_driver);
+          }
+          module_exit(gk_crg_exit);
+
+          MODULE_AUTHOR("GK6323V100C mainline port");
+          MODULE_DESCRIPTION("CRG gate + reset controller for Goke GK6323V100C");
+          MODULE_LICENSE("GPL");
+          CEOF
+          # 挂到 Kconfig / Makefile（printf 把 \t 放在格式串里，由 printf 自己转成 Tab；
+          # 若放参数里用 '%s' 会变成字面 \t，导致 Kconfig 报 "ttristate" 语法错）
+          if ! grep -q 'config COMMON_CLK_GK6323V100C' drivers/clk/hisilicon/Kconfig; then
+            printf '%s\n' 'config COMMON_CLK_GK6323V100C' >> drivers/clk/hisilicon/Kconfig
+            printf '\t%s\n' \
+              'tristate "Goke GK6323V100C CRG clock and reset driver"' \
+              'depends on ARCH_HISI || COMPILE_TEST' \
+              'default ARCH_HISI' \
+              'help' \
+              '  Clock gating and reset controller for Goke GK6323V100C SoC.' \
+              >> drivers/clk/hisilicon/Kconfig
+          fi
+          if ! grep -q 'crg-gk6323v100c.o' drivers/clk/hisilicon/Makefile; then
+            printf 'obj-$(CONFIG_COMMON_CLK_GK6323V100C)\t+= crg-gk6323v100c.o\n' >> drivers/clk/hisilicon/Makefile
+          fi
+          # 三层校验
+          test -s drivers/clk/hisilicon/crg-gk6323v100c.c
+          grep -q 'config COMMON_CLK_GK6323V100C' drivers/clk/hisilicon/Kconfig
+          grep -q 'crg-gk6323v100c.o' drivers/clk/hisilicon/Makefile
+          echo "=== CRG 驱动已部署 ==="
+          wc -l drivers/clk/hisilicon/crg-gk6323v100c.c
+          grep -n 'COMMON_CLK_GK6323V100C' drivers/clk/hisilicon/Kconfig drivers/clk/hisilicon/Makefile
+
+
+      - name: 应用 GK6323 DTB 兜底启动补丁（照搬 Hi3798MV320 逻辑）
+        run: |
+          set -euo pipefail
+          cd linux_build
+          HS=arch/arm64/kernel/head.S
+
+          # ★ 这里不再用「手写 diff + patch」的办法。手写补丁每增删一行都要人工同步
+          #   @@ 头里的行数与 "N insertions(+)"；写错一行，patch 就当头报
+          #     malformed patch at line NN
+          #   并直接退出，后面的检查一个字都不跑（2026-11-20 那次构建就是如此：
+          #   hunk 头写 @@ -88,6 +88,16 @@，正文却插了 11 行，正确应为 +88,17）。
+          #   改成脚本插入：不涉及行数计数，带幂等哨兵，重复跑只插一次；
+          #   锚点不唯一时直接中止，不做「猜一个位置硬插」。
+          #
+          #   寄存器只用 x20/x21，**绝不碰 x19**：
+          #   x19 由上一行的 record_mmu_state 写入，保存「进内核时 MMU 是否已开」，
+          #   后面 cbnz x19 / mov x0, x19 还要读它。早前那版补丁写 mov x19, x0，
+          #   把 x19 覆盖掉 —— 即使补丁打上了，内核也会走错缓存维护分支。
+          #
+          #   0x03FFC000 的构造必须「低位 movz + 高位 movk」：
+          #     movz x0, #0xc000           → x0 = 0x0000C000
+          #     movk x0, #0x03ff, lsl #16  → x0 = 0x03FFC000
+          #   早前那版写成 movz #0xc000, lsl #16 再 movk #0x03ff, lsl #16，
+          #   两条都左移 16，实际得到的是 0x03FF0000（差了 0xC000），
+          #   内核照样找不到 dtb。
+          #
+          #   ★ 魔数比较有大小端坑：FDT 魔数 0xd00dfeed 在文件里按**大端**存放，
+          #     `ldr w20, [x0]` 按小端读出来是 0xedfe0dd0，直接拿它跟 movz/movk
+          #     拼出的 0xd00dfeed 比较**永远不相等**，兜底分支等于没写。
+          #     故 ldr 之后补一条 `rev w20, w20` 把字节序翻正再比较。
+          if grep -q 'GK6323_DTB_FALLBACK' "$HS"; then
+            echo "OK   已存在 DTB 兜底代码，跳过插入"
+          else
+            N="$(grep -cE '^[[:space:]]*bl[[:space:]]+preserve_boot_args[[:space:]]*$' "$HS" || true)"
+            if [ "$N" -ne 1 ]; then
+              echo "::error::head.S 里 bl preserve_boot_args 出现 $N 次（期望 1 次），拒绝盲目插入"
+              exit 1
+            fi
+            # 用 printf %b 生成带真 tab 的汇编片段：不经 heredoc、不经 yaml 缩进剥离，
+            # 避免「复制粘贴把行首 tab 吃掉」这类只能靠肉眼发现的破坏。
+            printf '%b\n' \
+              '\t/* GK6323_DTB_FALLBACK: U-Boot passes ATAGS addr in x0; if x0 is not a valid FDT, use 0x03FFC000 */' \
+              '\tldr\tw20, [x0]' \
+              '\trev\tw20, w20' \
+              '\tmovz\tw21, #0xd00d, lsl #16' \
+              '\tmovk\tw21, #0xfeed' \
+              '\tcmp\tw20, w21' \
+              '\tb.eq\t1f' \
+              '\tmovz\tx0, #0xc000' \
+              '\tmovk\tx0, #0x03ff, lsl #16' \
+              '1:' > /tmp/gk6323-ins.S
+            awk 'FNR==NR{ins=ins $0 ORS; next}
+                 /^[[:space:]]*bl[[:space:]]+preserve_boot_args[[:space:]]*$/ && !d {printf "%s", ins; d=1}
+                 {print}' /tmp/gk6323-ins.S "$HS" > "$HS.new"
+            mv "$HS.new" "$HS"
+            echo "OK   DTB 兜底代码已插入"
+          fi
+
+          # 插入结果原样打印，便于核对寄存器与地址
+          grep -n -B2 -A11 'GK6323_DTB_FALLBACK' "$HS" || true
+          echo "启动逻辑：内核第一时间校验 x0 中的 dtb 魔数（0xd00dfeed），无效则自动读取 0x03FFC000（p10 固定加载地址）"
+
+      - name: 部署内核配置并强制关键驱动内置
+        run: |
+          set -euo pipefail
+          cd linux_build
+
+          # arm64 通用默认配置 → 叠加单板功能配置 → 叠加体积裁剪配置 → 让 kconfig 补依赖
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" defconfig
+          ./scripts/kconfig/merge_config.sh -m .config "../$FRAGMENT"
+          # 二次裁剪：单独放 slim.config 里维护，**只写「关掉什么」**
+          echo "=== 应用体积裁剪配置 slim.config ==="
+          ./scripts/kconfig/merge_config.sh -m .config "../slim.config"
+
+          # ★ 这里绝不能再写成 `yes "" | make … olddefconfig`。
+          #   olddefconfig 是非交互的，根本不读 stdin。2026-11-19 那次构建就栽在这：
+          #   make 先退出，yes 接着往管道里写、收到 SIGPIPE，在 set -o pipefail 之下
+          #   整条管道返回非零，set -e 立刻杀掉本步骤 —— 日志里只剩一句
+          #       yes: standard output: Broken pipe
+          #   紧跟着 "Process completed with exit code 1"，后面的检查一个字都没跑，
+          #   分不清是配置写错还是脚本自杀。
+          #   实测：`set -euo pipefail; yes "" | true` 退出码 1；去掉 pipefail 则为 0。
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+
+          # ============================================================
+          # 配置分层纪律自检：功能层只开、裁剪层只关、两层不许抢同一个符号
+          #
+          # 2026-11-19 日志里那 8 条
+          #   Value of CONFIG_xxx is redefined by fragment ../slim.config
+          # 不是错误（merge_config 的正常提示），但它暴露出真问题：两个文件同时写了
+          # CONFIG_NTFS3_FS、CONFIG_FB、CONFIG_MSDOS_FS、CONFIG_NLS_CODEPAGE_437、
+          # CONFIG_DEBUG_INFO_NONE 等，谁生效只取决于文件顺序。
+          # 这条自检把它钉死，违反即中止，不再靠人眼。
+          # ============================================================
+          echo "=== 配置分层纪律自检 ==="
+          DISC=0
+          if grep -qE '^CONFIG_[A-Z0-9_]+=[ym]$' "../slim.config"; then
+            echo "::error::slim.config（裁剪层）里出现了启用行 —— 它只允许写「关掉」"
+            grep -nE '^CONFIG_[A-Z0-9_]+=[ym]$' "../slim.config" | sed 's/^/    /'
+            DISC=1
+          fi
+          if grep -qE '^# CONFIG_[A-Z0-9_]+ is not set$' "../$FRAGMENT"; then
+            echo "::error::$FRAGMENT（功能层）里出现了关闭行 —— 裁剪项应写在 slim.config"
+            grep -nE '^# CONFIG_[A-Z0-9_]+ is not set$' "../$FRAGMENT" | sed 's/^/    /'
+            DISC=1
+          fi
+          grep -E '^CONFIG_[A-Z0-9_]+=' "../$FRAGMENT" \
+            | sed 's/^\(CONFIG_[A-Z0-9_]*\)=.*/\1/' | sort -u > /tmp/layer.board
+          grep -E '^# CONFIG_[A-Z0-9_]+ is not set$' "../slim.config" \
+            | sed 's/^# \(CONFIG_[A-Z0-9_]*\).*/\1/' | sort -u > /tmp/layer.slim
+          # 注意：这里先把 comm 的结果落盘再判断，不用 `comm … | grep -q .`
+          # —— 后者在 pipefail 下同样可能被 SIGPIPE 坑成假阴性。
+          comm -12 /tmp/layer.board /tmp/layer.slim > /tmp/layer.overlap || true
+          if [ -s /tmp/layer.overlap ]; then
+            echo "::error::下列符号被两层同时写到（谁生效取决于文件顺序）："
+            sed 's/^/    /' /tmp/layer.overlap
+            DISC=1
+          fi
+          if [ "$DISC" -ne 0 ]; then
+            echo "::error::配置分层纪律自检未通过，已中止（见 docs/troubleshooting.md 构建阶段第 13 条）"
+            exit 1
+          fi
+          echo "OK   功能层 $(wc -l < /tmp/layer.board) 个启用项、裁剪层 $(wc -l < /tmp/layer.slim) 个关闭项，无重叠"
+
+          # 说明：$FRAGMENT 本身已包含下列全部项目，这里的 scripts/config
+          # 只是防止叠加过程中丢项，符号名以内核 Kconfig 为准
+          scripts/config --enable ARCH_HISI
+          scripts/config --enable OF
+          # 时钟 / 复位：本工作流在前面「部署 GK6323V100C CRG 驱动」步骤里自写
+          # 了 crg-gk6323v100c.c（platform_driver + subsys_initcall，显式开
+          # femac/ehci/ohci/i2c/eMMC/aiao/uart 13 路时钟门），Kconfig 符号是
+          # COMMON_CLK_GK6323V100C；这里启用它，并禁用 Hi3798MV200 CRG 以避免
+          # 冲突。
+          scripts/config --enable COMMON_CLK
+          scripts/config --enable COMMON_CLK_GK6323V100C
+          scripts/config --disable COMMON_CLK_HI3798MV200   # 我们有自写 CRG，避免冲突
+          scripts/config --enable RESET_CONTROLLER
+          scripts/config --enable RESET_HISI
+          # 中断控制器 / 定时器（真机是 GICv3 + A55，不是 GIC-400 + A53）
+          scripts/config --enable ARM_GIC
+          scripts/config --enable ARM_GIC_V3
+          scripts/config --enable ARM_ARCH_TIMER
+          # 控制台串口
+          scripts/config --enable SERIAL_AMBA_PL011
+          scripts/config --enable SERIAL_AMBA_PL011_CONSOLE
+          # 早期控制台：叠加层里已有 CONFIG_SERIAL_EARLYCON=y，这里再确认一次。
+          # ★ 别加 SERIAL_AMBA_PL011_EARLYCON —— 主线树里没有这个符号（那是 8250
+          #   系列的命名风格），PL011 的 earlycon 只受 SERIAL_EARLYCON 一个开关控制。
+          scripts/config --enable SERIAL_EARLYCON
+          # eMMC：(设备树追加 "snps,dw-mshc") → pltfm + dw + Hi3798 专用 glue
+          scripts/config --enable MMC
+          scripts/config --enable MMC_BLOCK
+          scripts/config --enable MMC_DW
+          scripts/config --enable MMC_DW_PLTFM
+          scripts/config --enable MMC_DW_HI3798CV200
+          # 根文件系统（NLS 是 NLS_CODEPAGE_* 的父符号）
+          scripts/config --enable EXT4_FS
+          scripts/config --enable NLS
+          # 命令行分区表：本机 root= 与全部 18 个分区都由 bootargs 里的
+          # blkdevparts= 下发
+          # ★ 必须先开父菜单 PARTITION_ADVANCED：CMDLINE_PARTITION 的 prompt
+          #   条件是 "if PARTITION_ADVANCED"，父项为 n 时它成了无 prompt 符号，
+          #   这一行会被 olddefconfig 丢弃，构建随后停在「必须项」一节
+          scripts/config --enable PARTITION_ADVANCED
+          scripts/config --enable MSDOS_PARTITION
+          scripts/config --enable CMDLINE_PARTITION
+          # 声音：本仓库的落点仍是 **USB 声卡**（见下方 SND_USB_AUDIO），这条不受影响。
+          # 板载 ES8316 走国科 AIAO 那一路。补丁库 505-03 / 505-04 提供了 AIAO 的
+          # I2S 端口与声卡驱动，符号名逐字核对为 SND_SOC_HISTB_AIAO_I2S 与
+          # SND_SOC_HISTB_AIAO_CARD（**没有** SND_SOC_HISTB_AIAO 这个符号），
+          # 配合 codec SND_SOC_ES8316 才有可能出声。这里一并打开；设备树侧的
+          # AIAO / ES8316 / sound 三个节点已在本版接上。
+          scripts/config --enable SND
+          scripts/config --enable SND_SOC
+          scripts/config --enable SND_SOC_ES8316
+          scripts/config --enable SND_SOC_HISTB_AIAO_I2S
+          scripts/config --enable SND_SOC_HISTB_AIAO_CARD
+          # simple-audio-card：与真机原树一样，板载 ES8316 用 generic 声卡绑定，
+          # 不写 histb 那张专用卡节点。缺了这个符号，sound{} 节点无人认领。
+          scripts/config --enable SND_SIMPLE_CARD
+          scripts/config --enable I2C
+          # 板载百兆网口（★ 同样先开父菜单 NET_VENDOR_HISILICON，并带上 PHYLIB）
+          scripts/config --enable PHYLIB
+          scripts/config --enable OF_MDIO
+          scripts/config --enable NET_VENDOR_HISILICON
+          scripts/config --enable HISI_FEMAC
+          scripts/config --enable MDIO_HISI_FEMAC
+          # IPv6 协议栈：IPv6 在剪裁层 ../slim.config 里被 `# CONFIG_IPV6 is not set`
+          # 关掉了（merge 顺序在功能层之后，谁后写谁生效）。本步骤在 merge 与
+          # olddefconfig 之后执行，这里显式打开；IPV6 是带 prompt 的 bool、
+          # 依赖 NET/INET 均满足，后面那次 olddefconfig 不会把它重算掉。
+          scripts/config --enable IPV6
+          # HISI_FESTA_PHY：补丁库 rc3 起整库已无此符号，写在这里只会往 .config
+          # 里塞一行无主键、随后被 olddefconfig 丢掉。已删除，改由「已移除符号
+          # 报告」一节持续盯它 —— 驱动一旦回到补丁库就能立刻看到。
+          # I2C / GPIO / SPI / RTC / 看门狗 / 帧缓冲
+          scripts/config --enable I2C
+          scripts/config --enable I2C_HIX5HD2
+          scripts/config --enable GPIOLIB
+          scripts/config --enable GPIO_PL061
+          scripts/config --enable SPI
+          scripts/config --enable SPI_PL022
+          scripts/config --enable RTC_CLASS
+          scripts/config --enable RTC_DRV_PCF8563
+          scripts/config --enable WATCHDOG
+          scripts/config --enable ARM_SP805_WATCHDOG
+          # 带板调试：保留 debugfs。要读 /sys/kernel/debug/clk/clk_summary 才能查明
+          # eMMC / CRU 的时钟到底有没有被引导器打开 —— 这是能不能进系统的那一关，
+          # 而 debugfs 本身几乎不占体积，不能关。
+          scripts/config --enable DEBUG_FS
+          # 帧缓冲：本机第一阶段没有显示驱动、设备树里也没有 simple-framebuffer 节点，
+          # 控制台走串口 PL011。原本这里的 --enable FB / --enable FB_SIMPLE 与裁剪层
+          # 的 `# CONFIG_FB is not set` 正好互相矛盾（谁生效只看文件顺序），
+          # 现两者一并删除，FB 保持关闭，省下的体积留给内核本体。
+          # USB 主控（本板设备树里只有 EHCI/OHCI，无 xhci）
+          # ★ PHY_HISI_INNO_USB2 的父符号
+          scripts/config --enable GENERIC_PHY
+          scripts/config --enable USB_PHY
+          scripts/config --enable USB_EHCI_HCD
+          scripts/config --enable USB_EHCI_HCD_PLATFORM
+          scripts/config --enable USB_OHCI_HCD
+          scripts/config --enable USB_OHCI_HCD_PLATFORM
+          scripts/config --enable PHY_HISI_INNO_USB2
+          scripts/config --enable USB_STORAGE
+          # ALSA 骨架：SND_PCM / SND_TIMER 是**无 prompt 符号**，取值只由 select 决定，
+          # 在这里 --enable 也会被 olddefconfig 重算，故不写（见 kernel.config 附录）。
+          # ★ 本仓库存在的理由：USB 声卡 / USB DAC
+          scripts/config --enable SND_USB
+          # ★ 这里必须用 --module，不能用 --enable：--enable 对 tristate 符号等于设成 y，
+          #   会顶掉叠加层里的 =m，把 USB 音频编成内置，产物形态就不再是「内核 + 模块」，
+          #   逐行自检还会报「叠加层未生效：CONFIG_SND_USB_AUDIO=m」。SND_USB 是 bool，用 --enable 正确。
+          scripts/config --module SND_USB_AUDIO
+          # 模块支持：作者那版是纯内置内核（/proc/modules 不存在）
+          scripts/config --enable MODULES
+          scripts/config --enable MODULE_UNLOAD
+          # ★ NFS v3 客户端：挂载 NAS 音乐目录（2026-11-24 起放弃 CIFS，整条改走 NFS v3）。
+          #   背景：7.4-rc4 主线的 cifs.ko 在 readdir / 接收缓冲路径存在 use-after-free，
+          #   LMS 扫描大量音乐文件时命中 Oops（崩溃寄存器 x24 为 SLUB poison 值
+          #   0xd0d0d0d0...，崩溃进程是 perl）。关掉 CIFS_MD4 只是收窄命中路径，治不了根；
+          #   这里干脆不再编译整套 cifs.ko，直接绕开。
+          #   NFS_FS 编成模块（=m）：模块不进 Image，不占 boot 分区的 13MiB 上限，
+          #   与原来 CIFS=m 的产物形态一致。NFS_V3 有 prompt、显式打开；SUNRPC /
+          #   LOCKD / NFS_COMMON 是无 prompt 符号，由 NFS_FS / NFS_V3 自动 select，不写。
+          scripts/config --module NFS_FS
+          scripts/config --enable NFS_V3
+          scripts/config --enable NFS_V3_ACL
+          # ★ cgroup v2：Debian Trixie 的 systemd 257 已移除 cgroup v1 支持，只认统一层级。
+          #   ★★ 没有 CONFIG_CGROUPS_V2 这个符号，千万别写它：写了会被 olddefconfig 丢掉，
+          #      随后被「必须项」硬校验拦下 —— 2026-11-24 那次 exit 1 就是这么来的。
+          #      7.4-rc4 树自带的 Documentation/admin-guide/cgroup-v2.rst 只要求
+          #      `mount -t cgroup2 none <挂载点>`；参考仓库 hi3798mv100 那份可工作的完整
+          #      .config 里也是 CGROUPS=y + 一批控制器本体，通篇没有 CGROUPS_V2。
+          #      这棵树把 v1 兼容拆成每控制器可选的 MEMCG_V1 / CPUSETS_V1（默认关）。
+          #      必须齐的是控制器本体：少一个，所有服务启动时都会报 status=219/CGROUP。
+          scripts/config --enable MEMCG
+          scripts/config --enable CPUSETS
+          scripts/config --enable BLK_CGROUP
+          scripts/config --enable CGROUP_PIDS
+          scripts/config --enable CGROUP_FREEZER
+          # 同时把 CIFS 一族全部关掉（slim.config 里已关，这里再兜一道）。
+          scripts/config --disable CIFS
+          scripts/config --disable CIFS_MD4
+          scripts/config --disable CIFS_UPCALL
+          scripts/config --disable CIFS_DFS_UPCALL
+          scripts/config --disable SMB_SERVER
+          # 启动参数不再在这里置空：kernel.config 叠加层里已带上完整的
+          # CONFIG_CMDLINE 与 CONFIG_CMDLINE_FORCE=y（理由见该文件对应段落）。
+          # ★ 这里原本是 `scripts/config --set-str CMDLINE ""`。本步骤在 merge 之后
+          #   执行，保留它会把叠加层那行长命令行又清成空串，earlycon 随之消失 ——
+          #   带板阶段最要紧的那条早期串口输出就没了。切勿再加回来。
+          # ★ 长命令行一律写在叠加层文件里，不在此处用 --set-str 拼：不同版本的
+          #   scripts/config 对含空格/逗号/括号的字符串转义行为并不一致。
+
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+         
+
+          echo "=== 必须项：少一项这台机器就起不来或目标落空，直接中止 ==="
+          # ★ 这份清单必须与当前内核树里**真实存在**的符号一致。2026-11-20 那次
+          #   构建就是被这条清单自己挡下的：里面写了 CLK_GK6323V100C / RESET_GK6323
+          #   两个内核树里没有的符号，olddefconfig 丢掉它们、校验立刻中止。
+          for s in ARCH_HISI ARM_GIC_V3 ARM_ARCH_TIMER SERIAL_AMBA_PL011_CONSOLE \
+                   MMC_BLOCK MMC_DW_PLTFM \
+                   EXT4_FS PARTITION_ADVANCED CMDLINE_PARTITION \
+                   NET_VENDOR_HISILICON PHYLIB HISI_FEMAC IPV6 \
+                   USB_EHCI_HCD PHY_HISI_INNO_USB2 MODULES \
+                   CGROUPS MEMCG CPUSETS \
+                   NFS_FS NFS_V3; do
+            if grep -qE "^CONFIG_${s}=[ym]$" .config; then
+              echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
+            else
+              echo "::error::CONFIG_$s 未开启 —— 若该符号被 if 包住，请先确认它的父菜单已开启（见 docs/troubleshooting.md 构建阶段第 4 条）"
+              exit 1
+            fi
+          done
+
+          # ★ CIFS 一族必须全部 not set（2026-11-24 起改走 NFS v3）：整套 cifs.ko 不再
+          #   编译，从根上绕开 7.4-rc4 主线 cifs 的 use-after-free（x24=0xd0d0d0... SLUB
+          #   poison），LMS 扫描大量音乐文件时不再 panic。SMB_SERVER 也一并关。
+          for s in CIFS CIFS_MD4 CIFS_UPCALL CIFS_DFS_UPCALL SMB_SERVER; do
+            if grep -qE "^CONFIG_${s}=[ym]$" .config; then
+              echo "::error::CONFIG_$s 必须关闭（已改走 NFS v3，不再编译 CIFS）"
+              exit 1
+            else
+              echo "OK   CONFIG_$s is not set"
+            fi
+          done
+
+          # USB 音频是本仓库存在的理由，单独硬校验，形态与 mv100 一致（=m）
+          if grep -qE '^CONFIG_SND_USB_AUDIO=m$' .config; then
+            echo "OK   $(grep -E '^CONFIG_SND_USB_AUDIO=' .config)"
+          elif grep -qE '^CONFIG_SND_USB_AUDIO=y$' .config; then
+            echo "OK   $(grep -E '^CONFIG_SND_USB_AUDIO=' .config)（内置）"
+            echo "::warning::USB 音频被编成了内置（=y），modules.tar.gz 里不会有 snd-usb-audio.ko"
+            echo "::warning::要保持「内核 + 模块」形态，把本步骤里的 --enable SND_USB_AUDIO 改回 --module SND_USB_AUDIO"
+          else
+            echo "::error::CONFIG_SND_USB_AUDIO 未开启，USB 声卡会用不了"
+            exit 1
+          fi
+
+          # 统一的安全取值：grep 无命中时给空串，且不返回非零
+          #   ★ 本步骤开着 set -euo pipefail。写成
+          #       CUR="$(grep … | head -1)"
+          #     时，若该符号在 .config 里「一行都没有」，grep 返回 1，pipefail 把整条
+          #     管道带成非零，这个赋值命令就失败 —— set -e 立刻杀掉整个步骤：不打
+          #     警告、不打诊断，日志里只剩 "Process completed with exit code 1"。
+          #     这正是 2026-11-18 那次构建停在「期望项」第 7 项（HISI_FESTA_PHY）且
+          #     全无输出的原因。凡是从 .config 取一行，一律走 lookup()。
+          lookup() { grep -E "$1" .config 2>/dev/null | head -1 || true; }
+          kdef()   { grep -rn -A8 "^config $1\$" --include='Kconfig*' . 2>/dev/null | head -12 || true; }
+
+          # 报「未生效」时，把该符号在本次内核树里的 Kconfig 定义打出来：
+          # 一眼能看出是被 if 包住（父项没开）、依赖未满足，还是被改名/删除。
+          show_kconfig() {
+            local sym="$1" blk
+            blk="$(kdef "$sym")"
+            if [ -n "$blk" ]; then
+              echo "  └─ Kconfig 定义："
+              printf '%s\n' "$blk" | sed 's/^/     /'
+            else
+              echo "  └─ 本次内核树里找不到该符号的 Kconfig 定义 —— 很可能被改名或删除了"
+            fi
+          }
+
+          echo "=== 期望项：没生效只告警（可能依赖未满足或被改名）==="
+          for s in OF SERIAL_AMBA_PL011 \
+                   MMC MMC_DW MMC_DW_PLTFM MMC_DW_HI3798CV200 \
+                   COMMON_CLK_GK6323V100C \
+                   OF_MDIO MDIO_HISI_FEMAC \
+                   GENERIC_PHY USB_PHY \
+                   USB_EHCI_HCD_PLATFORM USB_OHCI_HCD USB_OHCI_HCD_PLATFORM USB_STORAGE \
+                   I2C_HIX5HD2 GPIO_PL061 SPI_PL022 RTC_DRV_PCF8563 ARM_SP805_WATCHDOG \
+                   DEBUG_FS \
+                   SND SND_USB SND_SOC SND_SOC_ES8316 \
+                   SND_SOC_HISTB_AIAO_I2S SND_SOC_HISTB_AIAO_CARD \
+                   SND_SIMPLE_CARD \
+                   PSI BPF_SYSCALL CGROUP_BPF \
+                   NLS NLS_UTF8 NLS_CODEPAGE_936; do
+            if grep -qE "^CONFIG_${s}=[ym]$" .config; then
+              echo "OK   $(grep -E "^CONFIG_${s}=" .config)"
+            else
+              CUR="$(lookup "^(CONFIG_${s}=|# CONFIG_${s} is not set)")"
+              if [ -z "$CUR" ]; then
+                echo "::warning::CONFIG_$s 在 .config 里一行都没有 —— 该符号不在本次内核树中（补丁未提供／已被改名／已随补丁库版本移除），写在叠加层也无处落地"
+              else
+                echo "::warning::CONFIG_$s 未生效（当前值：$CUR）"
+              fi
+              show_kconfig "$s"
+            fi
+          done
+
+          echo "=== 已移除符号报告（补丁库 rc3 起不再提供，仅报告不判失败）==="
+          # HISI_FESTA_PHY：旧补丁库由 pending-7.4/210-01 提供该 PHY 驱动，
+          #   rc3 版重构清单后，整库 126 个补丁里已无一提及 Festa PHY。
+          #   因此它在 7.4-rc4 内核树里不存在，叠加层写它必然被 olddefconfig 丢弃。
+          #   本板网口的 PHY 只能另想办法（hisilicon,hisi-femac-v2 自带或固定链路），
+          #   留待网口阶段处理；这里只报告，不判失败。
+          for s in HISI_FESTA_PHY; do
+            CUR="$(lookup "^(CONFIG_${s}=|# CONFIG_${s} is not set)")"
+            if [ -n "$CUR" ]; then
+              echo "    $s：$CUR"
+            else
+              echo "    $s：不在 .config 中 —— 内核树无此符号"
+              show_kconfig "$s"
+            fi
+          done
+
+          echo "=== 派生符号报告（无 prompt / 由 select 决定，写进叠加层也无效，仅报告不判失败）==="
+          # MII 与 MDIO_DEVICE 同类：drivers/net/Kconfig 里是 `config MII` + 单独一行
+          # `tristate`，没有提示字符串 —— 属无 prompt 符号，取值由 PHYLIB 等 select
+          # 决定。2026-11-19 那版把它列在「期望项」里，于是每轮构建都刷两条一模一样的
+          # 误报，已移到本节。MII 是 phylib 走 mii_* 接口的那一层，不写也照样会被拉起来。
+          for s in ARM_GIC_V3 ARM_GIC_V3_ITS SND_PCM SND_TIMER SND_HWDEP SND_RAWMIDI SND_SOC MDIO_DEVICE MII; do
+            V="$(lookup "^(CONFIG_${s}=|# CONFIG_${s} is not set)")"
+            printf '    %-22s %s\n' "$s" "${V:-（不在 .config 中）}"
+          done
+
+          echo "=== 内置命令行与早期控制台自检（带板阶段最要紧：能不能看见内核输出）==="
+          # 三条硬校验，缺一条就中止 —— 没有 earlycon 时，内核在 console 建立前
+          # 挂住的表现就是串口完全无声，连排查线索都拿不到。
+          CMDLINE_VAL="$(lookup '^CONFIG_CMDLINE=')"
+          if [ -z "$CMDLINE_VAL" ] || grep -qE '^CONFIG_CMDLINE=""$' .config; then
+            echo "::error::CONFIG_CMDLINE 为空 —— 内核拿不到 earlycon=，串口在 console 建立前不会有任何输出"
+            exit 1
+          fi
+          if ! grep -q 'earlycon=pl011' <<< "$CMDLINE_VAL"; then
+            echo "::error::CONFIG_CMDLINE 里没有 earlycon=pl011 —— 早期串口输出不会生效"
+            exit 1
+          fi
+          if ! grep -qE '^CONFIG_CMDLINE_FORCE=y$' .config; then
+            echo "::error::CONFIG_CMDLINE_FORCE 未开启 —— 引导器的 cmdline 会盖掉内核内置参数，earlycon 可能不生效"
+            exit 1
+          fi
+          # 回显：先去掉 CONFIG_CMDLINE= 前缀与两端引号，得到纯参数串再逐项匹配。
+          # ★ 两个坑：紧跟在第一个引号后面的那个参数（本机正是 earlycon=）会因为
+          #   "前面既不是行首也不是空格"而匹配不到；clk_ignore_unused / rootwait
+          #   这类**无值标志**也不能用 k= 去匹配。
+          CMDLINE_ARGS="${CMDLINE_VAL#CONFIG_CMDLINE=}"
+          CMDLINE_ARGS="${CMDLINE_ARGS%\"}"; CMDLINE_ARGS="${CMDLINE_ARGS#\"}"
+          echo "OK   CMDLINE_FORCE=y，内置命令行 $(printf '%s' "$CMDLINE_ARGS" | wc -c) 字节"
+          echo "     （不加 mem= 限制：真机内存 2GiB，见设备树 memory 节点）"
+          for k in earlycon console clk_ignore_unused root rootfstype rootwait panic blkdevparts; do
+            # ★ 末尾的 `|| true` 不能省。clk_ignore_unused / rootwait 是「无值标志」，
+            #   上面的 grep 对它们必然零匹配、返回 1；本步骤开着 set -euo pipefail，
+            #   这条赋值命令于是被判成失败，set -e 立刻杀掉整个步骤 —— 日志里只剩
+            #   前两行回显加一句 "Process completed with exit code 1"，毫无线索。
+            #   2026-11-19 那次构建正是停在这里：earlycon / console 打印完就断了。
+            v="$(grep -oE "(^|[[:space:]])${k}=[^[:space:]]*" <<< "$CMDLINE_ARGS" | head -1 | sed 's/^[[:space:]]*//' || true)"
+            if [ -z "$v" ]; then
+              if grep -qE "(^|[[:space:]])${k}([[:space:]]|$)" <<< "$CMDLINE_ARGS"; then
+                v="（无值标志，已存在）"
+              else
+                v="（缺）"
+              fi
+            fi
+            printf '     %-18s %s\n' "$k" "$v"
+          done
+          # 一致性告警：设备树 /chosen/bootargs 与内核内置命令行应当**逐字一致**。
+          # 两处都写是有意的：引导器把 fdt 交给内核时走设备树那份；CMDLINE_FORCE
+          # 生效时走内核那份。只改一处，另一条路就会带上旧参数。
+          # 同样兜底：一个 *.dts 都没匹配到（或只有 .orig 备份）时 grep 返回 1，
+          # pipefail 会把这条赋值判失败，后面那句「不一致告警」永远打不出来。
+          DTS_FILE="$(ls ../dts/*.dts 2>/dev/null | grep -v '\.orig\.' | head -1 || true)"
+          if [ -n "$DTS_FILE" ]; then
+            DTS_BA="$(grep -oE 'bootargs = "[^"]*"' "$DTS_FILE" | head -1 | sed 's/^bootargs = "//; s/"$//' || true)"
+            if [ -z "$DTS_BA" ]; then
+              echo "::warning::$DTS_FILE 里没找到 chosen/bootargs，无法比对一致性"
+            elif [ "$DTS_BA" != "$CMDLINE_ARGS" ]; then
+              echo "::warning::设备树 bootargs 与内核内置命令行不一致 —— 两处都改才保证两条路都正确"
+              echo "     设备树：$DTS_BA"
+              echo "     内核  ：$CMDLINE_ARGS"
+            else
+              echo "OK   设备树 bootargs 与内核内置命令行逐字一致（$(printf '%s' "$DTS_BA" | wc -c) 字节）"
+            fi
+          fi
+
+          echo "=== 单板配置层逐行自检（未生效的逐条列出）==="
+          # 本文件只应出现「有 prompt 的符号」；无 prompt 符号（SND_PCM、SND_TIMER、
+          # ARM_GIC_V3_ITS 等）写了必然被 olddefconfig 重算，已从本文件移除。
+          grep '^CONFIG_' "../$FRAGMENT" > /tmp/board.want
+          MISS=0
+          while read -r line; do
+            case "$line" in
+              CONFIG_CMDLINE=*) continue ;;
+            esac
+            sym="${line%%=*}"; sym="${sym#CONFIG_}"
+            # tristate 符号的 m 可能被 select 提升为 y（属正常，不是丢项），
+            # 因此以 =m 结尾的行按 [ym] 判定，其余行仍逐字节严格比对。
+            case "$line" in
+              *=m)
+                key="${line%=m}"
+                if ! grep -qE "^${key}=[ym]$" .config; then
+                  echo "::warning::叠加层未生效：$line（期望 m，实际 $(lookup "^${key}=")）"
+                  show_kconfig "$sym"
+                  MISS=$((MISS + 1))
+                fi
+                ;;
+              *)
+                if ! grep -qxF "$line" .config; then
+                  CUR="$(lookup "^(CONFIG_${sym}=|# CONFIG_${sym} is not set)")"
+                  if [ -z "$CUR" ]; then
+                    echo "::warning::叠加层未生效：$line（该符号在 .config 里一行都没有 —— 不在本次内核树中）"
+                  else
+                    echo "::warning::叠加层未生效：$line（当前值：$CUR）"
+                  fi
+                  show_kconfig "$sym"
+                  MISS=$((MISS + 1))
+                fi
+                ;;
+            esac
+          done < /tmp/board.want
+          echo "叠加层未生效行数：$MISS"
+          echo "=== 最终内核版本 ==="
+          make -s ARCH="$ARCH" kernelrelease
+
+      - name: 编译内核与模块
+        run: |
+          set -euo pipefail
+          cd linux_build
+          export CCACHE_DIR="$HOME/.ccache"
+          ccache --max-size=5G
+          ccache -z
+          make -j"$(nproc)" ARCH="$ARCH" CROSS_COMPILE="ccache $CROSS_COMPILE" Image
+          make -j"$(nproc)" ARCH="$ARCH" CROSS_COMPILE="ccache $CROSS_COMPILE" modules
+          ccache -s
+
+      - name: 编译仓库自带的 GK6323V100C 设备树
+        run: |
+          set -euo pipefail
+          OUT="linux_build/arch/arm64/boot/dts/hisilicon/$TARGET_DTB"
+          mkdir -p "$(dirname "$OUT")"
+          # 优先用内核树自带的 dtc（与内核同源），没有则用系统 dtc
+          DTC="linux_build/scripts/dtc/dtc"
+          [ -x "$DTC" ] || DTC="$(command -v dtc || true)"
+          [ -n "$DTC" ] || { echo "::error::找不到 dtc（内核树与系统里都没有）"; exit 1; }
+          echo "使用 dtc：$DTC"
+          # ★ 不要加 -@。本设备树没有任何 overlay 消费者，-@ 只会白白生成一个
+          #   __symbols__ 节点（把每个 label 连同它的完整路径写进 dtb），本地按
+          #   规范核算多占约 900 字节。本机 dtb 要塞进 bootcmd 只读的 16KiB 窗口，
+          #   这 900 字节不值得花。
+          "$DTC" -I dts -O dtb -o "$OUT" "$BOARD_DTS"
+          echo "=== 反编译回读关键项，确认编译结果与真机一致 ==="
+          "$DTC" -I dtb -O dts "$OUT" > /tmp/rt.dts
+          for k in "arm,cortex-a55" "arm,gic-v3" "arm,pl011" "goke,gk6323v100c" \
+                   "goke,gk6323v100c-dw-mshc" "snps,dw-mshc" \
+                   "hisilicon,hisi-femac-v2" "hisilicon,hisi-femac-mdio" \
+                   "hisilicon,hi3798mv200-aiao-i2s" "everest,es8316" \
+                   "generic-ehci" "generic-ohci" \
+                   "nxp,pcf8563" "arm,sp805-wdt"; do
+            if grep -q "$k" /tmp/rt.dts; then
+              echo "OK   $k"
+            else
+              echo "::error::编译后的 dtb 缺少 $k"
+              exit 1
+            fi
+          done
+          # CRG 控制器节点：cru / crg 两种写法任一即可（驱动两种都认）
+          if grep -q "goke,gk6323v100c-cru" /tmp/rt.dts || grep -q "goke,gk6323v100c-crg" /tmp/rt.dts; then
+            echo "OK   goke,gk6323v100c-cru/crg"
+          else
+            echo "::error::编译后的 dtb 缺少 CRG 控制器节点（cru/crg）"
+            exit 1
+          fi
+          ls -l "$OUT"
+
+          # === 设备树体积诊断 ===
+          # 为什么盯这个数：U-Boot 的 bootcmd 是
+          #   mmc read 0 0x03FFC000 0x19000 0x20
+          # 从 dtbo 分区只读 0x20 = 32 块 = 16KiB 到 0x03FFC000（紧贴内核加载地址
+          # 0x04000000 之下）。dtb 一旦超过这个窗口，尾部会被随后读入的内核覆盖，
+          # 内核解析设备树失败 → 表现为开机红灯循环。所以每轮都打印，不靠猜。
+          DTS_SZ=$(stat -c%s "$BOARD_DTS")
+          DTB_SZ=$(stat -c%s "$OUT")
+          # 按 dtb 头结构拆分：魔数(4)+totalsize(4)+off_dt_struct(4)+off_dt_strings(4)+off_mem_rsvmap(4)+version(4)+last_comp_version(4)+boot_cpuid_phys(4)+size_dt_strings(4)+size_dt_struct(4) = 40 字节头
+          # ★ FDT/DTB 全程大端：所有头字段必须用 --endian=big 读。
+          #   od 默认按主机字节序（x86 为小端），会把 off_dt_struct 的真值
+          #   0x38(56) 读成 0x38000000(939524096)，块大小读出 GB 级天文数字，
+          #   诊断本身就会被误判成 "dtb 损坏"。2026-11-19 那次构建正是如此。
+          #   字段偏移：magic@0 totalsize@4 off_dt_struct@8 off_dt_strings@12
+          #   off_mem_rsvmap@16 version@20 last_comp_version@24
+          #   boot_cpuid_phys@28 size_dt_strings@32 size_dt_struct@36
+          be32() { od -A n --endian=big -t u4 -j "$2" -N 4 "$1" | tr -d ' \n\t'; }
+          FDT_MAGIC="$(od -A n -t x1 -j 0 -N 4 "$OUT" | tr -d ' \n\t')"
+          FDT_TOTAL="$(be32 "$OUT" 4)"
+          STRUCT_OFF="$(be32 "$OUT" 8)"
+          STRINGS_OFF="$(be32 "$OUT" 12)"
+          RSVMAP_OFF="$(be32 "$OUT" 16)"
+          STRINGS_SIZE="$(be32 "$OUT" 32)"
+          STRUCT_SIZE="$(be32 "$OUT" 36)"
+          RESERVE_SIZE=$((STRUCT_OFF - RSVMAP_OFF))
+          # FDT 完整性校验：魔数、总长、各块偏移与大小必须自洽，否则先报解析错误，
+          # 不允许拿着错乱的数字继续往下判断（内存节点就是在这一步被误杀的）。
+          if [ "$FDT_MAGIC" != "d00dfeed" ]; then
+            echo "::error::dtb 魔数不是 d00dfeed（读到 $FDT_MAGIC），文件损坏"
+            exit 1
+          fi
+          if [ "$FDT_TOTAL" -ne "$DTB_SZ" ]; then
+            echo "::error::dtb 头 totalsize=$FDT_TOTAL 与文件大小 $DTB_SZ 不一致，文件损坏"
+            exit 1
+          fi
+          if [ $((STRUCT_OFF + STRUCT_SIZE)) -gt "$FDT_TOTAL" ] || [ $((STRINGS_OFF + STRINGS_SIZE)) -gt "$FDT_TOTAL" ] || [ "$RSVMAP_OFF" -gt "$FDT_TOTAL" ]; then
+            echo "::error::dtb 块偏移越界：struct $STRUCT_OFF+$STRUCT_SIZE / strings $STRINGS_OFF+$STRINGS_SIZE / rsvmap $RSVMAP_OFF，总长 $FDT_TOTAL"
+            exit 1
+          fi
+          echo "=== 设备树体积诊断（全部为动态实测值） ==="
+          echo "dts 源文件      ：$DTS_SZ 字节"
+          echo "编出的 dtb      ：$DTB_SZ 字节 = $((DTB_SZ/1024)) KiB"
+          echo "  ├─ FDT 头       : 40 字节"
+          echo "  ├─ 保留内存表   : $RESERVE_SIZE 字节"
+          echo "  ├─ 结构块       : $STRUCT_SIZE 字节"
+          echo "  └─ 字符串块     : $STRINGS_SIZE 字节"
+          echo "引导器读取窗口  ：16384 字节（bootcmd: mmc read 0 0x03FFC000 0x19000 0x20）"
+          echo "窗口占用        ：$((DTB_SZ * 100 / 16384))%（剩余 $((16384 - DTB_SZ)) 字节余量）"
+          echo "参照：作者那版 dtbo 里的 dtb 是 9156 字节"
+          # grep -c 零匹配时会打印 0 但返回 1，兜底一下更稳（本行在 echo 内，其实
+          # 不会触发 set -e，但保持与其它取值处一致的写法）。
+          echo "节点数（按 dts 源统计）：$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_@,.-]*[[:space:]]*\{' "$BOARD_DTS" || true)"
+          # 内存节点：与真机物理内存比对。
+          # 判据：真机导出的设备树 hwinfo/hw1.txt 里 memory@0 为
+          #   reg = <0x00 0x00 0x00 0x80000000>，即 2GiB；真机 /proc/meminfo 亦为
+          #   MemTotal 2018984 kB ≈ 2GiB，与本机 2+32G 档位一致。
+          # ★ U-Boot 打印的 "DRAM: 1 GiB / DDR Size: 1 GiB (Boot: 1 GiB)" 是它自己
+          #   启动时的可映射窗口，**不是整机物理内存**；拿它当上限会误杀 2GiB 配置。
+          # 声明过大的后果确实隐蔽：内核在 free_area_init 阶段遍历这些不存在的
+          # 物理页时 console 尚未建立，表现为串口全静、无报错 —— 所以要打印出来
+          # 让人可见，但不做硬拦（只告警），避免重演误杀。
+          # 找不到 memory reg 时必须能落到下面的告警分支，所以这里也要兜底；
+          # 否则 set -e 会在赋值处直接退出，那句「请人工确认内存节点」永远打不出来。
+          MEM_REG="$(grep -oE '0x00 0x00 0x00 0x[0-9a-f]+' "$BOARD_DTS" | head -1 || true)"
+          if [ -z "$MEM_REG" ]; then
+            echo "::warning::设备树里没找到 (0x00 0x00 0x00 0x…) 形式的 memory reg，请人工确认内存节点"
+          else
+            MEMSZ=$(( 0x${MEM_REG##*0x} ))
+            echo "memory 节点     ：$MEM_REG（$((MEMSZ / 1024 / 1024)) MiB，真机 MemTotal 约 2GiB）"
+            # 只比对、只告警，不中止：判据是 hw1.txt 的 memory@0 与 hw2.txt 的
+            # MemTotal，不是 U-Boot 那句 DRAM 数值（原因见上）。
+            if [ "$MEMSZ" -ne 2147483648 ]; then
+              echo "::warning::内存节点声明 $((MEMSZ/1024/1024)) MiB，与真机实测 2GiB 不一致，请人工复核"
+            fi
+          fi
+
+      - name: 追加设备树并打包 uImage
+        run: |
+          set -euo pipefail
+          cd linux_build
+          IMG=arch/arm64/boot/Image
+          DTB="arch/arm64/boot/dts/hisilicon/$TARGET_DTB"
+          if [ ! -f "$DTB" ]; then
+            echo "::error::设备树不存在: $DTB"
+            exit 1
+          fi
+
+          cat "$IMG" "$DTB" > Image-dtb
+
+          ISIZE=$(stat -c%s "$IMG")
+          DTBSIZE=$(stat -c%s "$DTB")
+          MAGIC=$(dd if=Image-dtb bs=1 skip="$ISIZE" count=4 2>/dev/null | od -A n -t x1 | tr -d ' \n\t')
+          echo "Image=$ISIZE 字节, dtb=$DTBSIZE 字节, 追加处魔数=$MAGIC"
+          if [ "$MAGIC" != "d00dfeed" ]; then
+            echo "::error::设备树追加位置错误，魔数不是 d00dfeed"
+            exit 1
+          fi
+
+          # 设备树体积硬校验：引导器 bootcmd 里从 dtbo 分区只读 32 块 = 16KiB 到
+          # 0x03FFC000（紧跟内核加载地址 0x04000000 之前）。dtb 一旦超窗口，
+          # 尾部会被随后读入的内核覆盖，内核解析设备树失败 → 开机红灯循环。
+          # 参照：作者那版 dtbo 里的 dtb 只有 9156 字节；本仓库精简后的 dts
+          # 编出来约 3800 字节，只占窗口 23%，余量充足。故这里可以直接判死。
+          if [ "$DTBSIZE" -gt 16384 ]; then
+            echo "::error::设备树 $DTBSIZE 字节 > 16KiB 读取窗口 —— 刷上去会被截断，内核起不来。"
+            echo "::error::处理：精简 dts/gk6323v100c-chaoge-z71a.dts 的节点（先删无消费者的 gpio、未用的 uart2/3、i2c0/1、spi0），"
+            echo "::error::或确认没有给 dtc 加回 -@（-@ 会白白生成 __symbols__ 节点，多占约 900 字节）。"
+            exit 1
+          fi
+
+          mkimage -A arm64 -O linux -T kernel -C none \
+            -a "$UIMAGE_LOADADDR" -e "$UIMAGE_ENTRYADDR" \
+            -n "GK6323V100C Linux $PATCHES_KERNEL_VERSION" \
+            -d Image-dtb arch/arm64/boot/boot.img
+
+          echo "=== uImage 头信息 ==="
+          mkimage -l arch/arm64/boot/boot.img
+
+          # 两个上限别混：① boot 分区容量 60M（写不写得进）
+          #              ② U-Boot 的 CONFIG_SYS_BOOTM_LEN（bootm 收不收）
+          # 上一轮就是栽在第 ② 条：U-Boot 打印
+          #   "Image too large: increase CONFIG_SYS_BOOTM_LEN" 后复位，
+          #   红灯循环重启，内核一次都没加载。
+          PART_LIMIT=$((BOOT_PART_LIMIT_MB * 1024 * 1024))
+          BOOTM_LIMIT=$((BOOT_IMAGE_MAX_MB * 1024 * 1024))
+          FSIZE=$(stat -c%s arch/arm64/boot/boot.img)
+          DSIZE=$(( FSIZE - 64 ))   # 去掉 64 字节 legacy 头，这个才是 bootm 看的数
+
+          echo "uImage 数据大小 ih_size ：$DSIZE 字节 = $((DSIZE/1024/1024)) MiB"
+          echo "boot.img 文件大小        ：$FSIZE 字节 = $((FSIZE/1024/1024)) MiB"
+          echo "对照：作者原厂 boot.img 14,028,808 字节；U-Boot 读取 15,728,640 字节（15MiB）"
+
+          if [ "$FSIZE" -gt "$PART_LIMIT" ]; then
+            echo "::error::boot.img 超过 boot 分区容量（${BOOT_PART_LIMIT_MB}M），写不进去"
+            exit 1
+          fi
+
+          # 把裁剪层那几项的最终取值打出来，便于下一轮继续压。
+          # 这些符号都由 slim.config（裁剪层）关闭，核对时看是否为 n：
+          # 仍是 =y 说明没关掉；=m 多半是被 select 拉起，详见 README 的自检对照表。
+          echo "=== 裁剪层效果核对（关键项应为 n / m）==="
+          for s in DRM MEDIA_SUPPORT ATA MD BLK_DEV_DM IPV6 NETFILTER BT WLAN \
+                   VIRTUALIZATION KVM XEN FTRACE KPROBES BPF_SYSCALL \
+                   KALLSYMS RC_CORE HID CPU_FREQ CPU_IDLE ARM_CMN CRYPTO_ZSTD SCSI_UFSHCD; do
+            V="$(grep -E "^CONFIG_${s}=|^# CONFIG_${s} is not set" .config 2>/dev/null | head -1 || true)"
+            printf '    %-18s %s\n' "$s" "${V:-（不在 .config 中）}"
+          done
+
+          # 体积构成。★ 2026-11-19 修正：上一版直接用 `find . -name '*.o'` 统计，
+          #   把**模块**的 .o 也算了进去 —— 而 Image 里只有 =y 的代码，模块对象对
+          #   Image 体积零贡献。那份清单因此严重失真（排最前的 snd-usb-audio.o
+          #   548KB、snd-pcm.o、ntfs3.o 全是模块），照它裁剪必然打空。
+          #   现在只统计真正进 Image 的东西：vmlinux 各段 + built-in.a 的成员。
+          echo "=== 体积构成（供下一轮继续压）==="
+          [ -f vmlinux ] && ls -l vmlinux && size vmlinux 2>/dev/null || true
+          echo "--- vmlinux 各段（决定 Image 大小的就是这些，按字节降序）---"
+          size -A vmlinux 2>/dev/null | sort -k2 -rn 2>/dev/null | head -20 || true
+          echo "--- 最大的 25 个内置目标文件（built-in.a 成员，模块已排除）---"
+          : > /tmp/builtin.tsv
+          for a in $(find . -name built-in.a -type f 2>/dev/null); do
+            d="${a%/built-in.a}"; d="${d#./}"
+            ar tv "$a" 2>/dev/null | awk -v d="$d" 'NF>=3 && $NF ~ /\.o$/ {printf "%d\t%s/%s\n", $3, d, $NF}' >> /tmp/builtin.tsv || true
+          done
+          echo "内置目标文件条目数：$(wc -l < /tmp/builtin.tsv)"
+          sort -rn /tmp/builtin.tsv 2>/dev/null | head -25 || true
+          echo "--- 内置体积按顶层目录汇总 ---"
+          awk -F'\t' '{split($2,p,"/"); a[p[1]]+=$1} END{for (k in a) printf "%10d\t%s\n", a[k], k}' \
+            /tmp/builtin.tsv | sort -rn 2>/dev/null | head -15 || true
+          echo "--- 模块（不进 Image，仅供核对）---"
+          find . -name '*.ko' -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn 2>/dev/null | head -10 || true
+
+          if [ "$DSIZE" -gt "$BOOTM_LIMIT" ]; then
+            echo "::error::镜像 $DSIZE 字节 > 目标上限 $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB），超出 $(( (DSIZE - BOOTM_LIMIT) / 1024 )) KiB"
+            echo "::error::已确认能启动的原厂 ih_size 是 14,028,744 字节；刷上去会停在 'Image too large: increase CONFIG_SYS_BOOTM_LEN' 并红灯循环重启。"
+            echo "::error::故这里中止，不发布不可刷的镜像。继续压的入口：看上面「最大的 25 个内置目标文件」与「vmlinux 各段」，"
+            echo "::error::在 slim.config（裁剪层，只写 # CONFIG_XXX is not set）里关掉对应子系统；若要保留功能就编成模块，"
+            echo "::error::把对应的 =m 写进 $FRAGMENT（功能层，只写启用项）。两层不要抢同一个符号，否则谁生效只看文件顺序。"
+            echo "::error::★ 注意：Image 里只装 =y 的代码，=m 的驱动对体积零贡献 —— 别拿模块对象当裁剪依据。"
+            exit 1
+          fi
+          echo "镜像大小校验通过：$DSIZE ≤ $BOOTM_LIMIT 字节（${BOOT_IMAGE_MAX_MB}MiB）"
+
+      - name: 整理产物
+        run: |
+          set -euo pipefail
+          cd linux_build
+          rm -rf out
+          mkdir -p out
+          KREL="$(make -s ARCH="$ARCH" kernelrelease)"
+          cp arch/arm64/boot/boot.img out/boot.img
+          cp arch/arm64/boot/Image out/Image
+          # 符号表：CONFIG_KALLSYMS 关掉后 oops 只打裸地址（pc : 0xffffffc0…），
+          #   必须用同一次构建的 System.map 反查函数名；不进 Image，不影响体积
+          if [ -f System.map ]; then
+            cp System.map out/System.map
+            echo "System.map：$(stat -c%s System.map) 字节 —— 已随产物上传，可把 oops 裸地址反查成函数名"
+          else
+            echo "警告：构建目录没有 System.map；如需解析 oops，请取构建目录里的 vmlinux（保留 ELF 符号表）" | tee out/System.map
+          fi
+          # 单独发一份 dtb：真机运行时的设备树来自 dtbo 分区，这一份必须写入 p10
+          cp "arch/arm64/boot/dts/hisilicon/$TARGET_DTB" out/
+          # 刷机包格式的 dtbo.img：正好 2MiB（= p10 分区大小），全零补齐后再把 dtb 覆盖到开头。
+          #   与作者原厂 dtbo.img 逐字节同构（原厂：dtb 9156 字节 + 全零补到 2MiB）。
+          #   TTL 刷机时可以直接 tftp 整块写 p10，不必再自己算 dtb 实际长度、也不必先擦。
+          DTBO_BYTES=$((2 * 1024 * 1024))
+          dd if=/dev/zero of="out/dtbo.img" bs=4096 count=$((DTBO_BYTES / 4096)) status=none
+          dd if="out/$TARGET_DTB" of="out/dtbo.img" conv=notrunc status=none
+          DTBO_SZ=$(stat -c%s "out/dtbo.img")
+          [ "$DTBO_SZ" -eq "$DTBO_BYTES" ] || { echo "::error::dtbo.img 大小 $DTBO_SZ != $DTBO_BYTES"; exit 1; }
+          DTBO_MAGIC=$(od -A n -t x1 -N 4 "out/dtbo.img" | tr -d ' \n\t')
+          [ "$DTBO_MAGIC" = "d00dfeed" ] || { echo "::error::dtbo.img 魔数 $DTBO_MAGIC != d00dfeed"; exit 1; }
+          DTBO_TOTAL=$(od -A n --endian=big -t u4 -j 4 -N 4 "out/dtbo.img" | tr -d ' \n\t')
+          [ "$DTBO_TOTAL" -eq "$(stat -c%s "out/$TARGET_DTB")" ] || { echo "::error::dtbo.img 里的 FDT totalsize=$DTBO_TOTAL 与 dtb 文件大小不符"; exit 1; }
+          echo "dtbo.img：$DTBO_SZ 字节（2MiB），FDT totalsize=$DTBO_TOTAL，内嵌 dtb 与 out/$TARGET_DTB 同源"
+          cp .config "out/config-$KREL"
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$PWD/out/_mod" modules_install
+          rm -f out/_mod/lib/modules/*/build out/_mod/lib/modules/*/source
+          tar -czf out/modules.tar.gz -C out/_mod .
+          rm -rf out/_mod
+          # 生成校验清单，便于上机前后核对
+          cd out
+          sha256sum boot.img dtbo.img modules.tar.gz Image "$TARGET_DTB" "config-$KREL" > sha256sums.txt
+          sha256sum System.map >> sha256sums.txt 2>/dev/null || true
+          cat sha256sums.txt
+          echo "内核 release: $KREL"
+          echo "=== 产物列表 ==="
+          ls -lh
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: gk6323v100c-linux-${{ env.PATCHES_KERNEL_VERSION }}
+          if-no-files-found: error
+          retention-days: 90
+          path: linux_build/out/*
+
+           
+      - name: 发布到 GitHub Release-2G内存版
+        uses: softprops/action-gh-release@v2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}          
+        with:
+          tag_name: gk6323v100c-2G-ddr
+          body_path: linux_build/out/RELEASE_NOTES.md
+          allowUpdates: true
+          replacesArtifacts: true
+          artifactErrorsFailBuild: true
+          body: |
+            ====================🧊固件信息🧊=======================
+            ➦ 📒 固件名称：国科6323v100c 2G内存版
+            ➦ 💻 内核平台：${{ env.ARCH }}
+            ➦ ⚽ 内核版本：${{ env.PATCHES_KERNEL_VERSION }}
+          files: |
+            linux_build/out/boot.img
+            linux_build/out/dtbo.img
+            linux_build/out/${{ env.TARGET_DTB }}
+            linux_build/out/modules.tar.gz
+            linux_build/out/Image
+            linux_build/out/System.map
+            linux_build/out/sha256sums.txt
+            linux_build/out/config-*
