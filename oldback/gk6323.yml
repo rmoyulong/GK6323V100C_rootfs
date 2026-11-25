@@ -16,7 +16,7 @@ name: GK6323V100C 主线内核自动构建
 #   5) 刷写分区：boot = /dev/mmcblk0p15（60M，起始 112M）
 #
 # 基线（与 mv100 仓库逐字一致）：
-#   KERNEL_VERSION = 7.4-rc3
+#   KERNEL_VERSION = 7.4-rc4
 #   BASE_SHA       = 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
 # 注意：下面 env 里的两个值是**兜底值**。流水线会先拉补丁库、读它自己的
 # baseline 文件，以库里的值为准 —— 补丁库更新后不必再改本文件。
@@ -70,8 +70,8 @@ jobs:
       # 补丁仓库（与 hi3798mv100 用同一个库；本机只取其 i2c/femac 等共用 IP 修正）
       PATCHES_REPO: https://github.com/rmoyulong/histb-mainline_patches
       # 兜底值；会被补丁库 baseline 文件里的实际值覆盖（见「拉取补丁仓库并读取基线」）
-      PATCHES_BASE_SHA: 19d1b4de6d37bccecc3ad9144d279f1baa405eb1
-      PATCHES_KERNEL_VERSION: 7.4-rc3
+      PATCHES_BASE_SHA: a4d7daea71be591034445c17d4d81132a1785a12
+      PATCHES_KERNEL_VERSION: 7.4-rc4
       # uImage 头内地址，与实机 boot.img 实测一致
       UIMAGE_LOADADDR: "0x02000000"
       UIMAGE_ENTRYADDR: "0x02000000"
@@ -172,7 +172,7 @@ jobs:
           fi
 
           # 兼容四种写法：KEY = v / KEY=v / "# KEY = v" / KEY := v
-          #   ★ 补丁库 rc3 起用的是 "KERNEL_VERSION := 7.4-rc3"（make 写法）。
+          #   ★ 补丁库 rc3 起用的是 "KERNEL_VERSION := 7.4-rc4"（make 写法）。
           #     只认 "=" 的正则在它上面取到空串 → 静默回落到本文件底部的兜底值，
           #     「自动读基线」于是形同失效，库里换版本也不会跟着动。
           #   ★ 末尾 || true：baseline 不存在时 sed 返回非零，否则 set -e 直接杀步骤。
@@ -208,7 +208,7 @@ jobs:
           cd linux_build
           git checkout -q "$PATCHES_BASE_SHA"
 
-          # 规范化：7.4.0-rc3 -> 7.4-rc3，使两种写法等价
+          # 规范化：7.4.0-rc3 -> 7.4-rc4，使两种写法等价
           norm() { printf '%s' "$1" | sed -E 's/^([0-9]+\.[0-9]+)\.0/\1/'; }
           ACT="$(make -s kernelversion)"
           EXP="$PATCHES_KERNEL_VERSION"
@@ -785,7 +785,7 @@ jobs:
           scripts/config --enable MODULES
           scripts/config --enable MODULE_UNLOAD
           # ★ NFS v3 客户端：挂载 NAS 音乐目录（2026-11-24 起放弃 CIFS，整条改走 NFS v3）。
-          #   背景：7.4-rc3 主线的 cifs.ko 在 readdir / 接收缓冲路径存在 use-after-free，
+          #   背景：7.4-rc4 主线的 cifs.ko 在 readdir / 接收缓冲路径存在 use-after-free，
           #   LMS 扫描大量音乐文件时命中 Oops（崩溃寄存器 x24 为 SLUB poison 值
           #   0xd0d0d0d0...，崩溃进程是 perl）。关掉 CIFS_MD4 只是收窄命中路径，治不了根；
           #   这里干脆不再编译整套 cifs.ko，直接绕开。
@@ -798,7 +798,7 @@ jobs:
           # ★ cgroup v2：Debian Trixie 的 systemd 257 已移除 cgroup v1 支持，只认统一层级。
           #   ★★ 没有 CONFIG_CGROUPS_V2 这个符号，千万别写它：写了会被 olddefconfig 丢掉，
           #      随后被「必须项」硬校验拦下 —— 2026-11-24 那次 exit 1 就是这么来的。
-          #      7.4-rc3 树自带的 Documentation/admin-guide/cgroup-v2.rst 只要求
+          #      7.4-rc4 树自带的 Documentation/admin-guide/cgroup-v2.rst 只要求
           #      `mount -t cgroup2 none <挂载点>`；参考仓库 hi3798mv100 那份可工作的完整
           #      .config 里也是 CGROUPS=y + 一批控制器本体，通篇没有 CGROUPS_V2。
           #      这棵树把 v1 兼容拆成每控制器可选的 MEMCG_V1 / CPUSETS_V1（默认关）。
@@ -845,7 +845,7 @@ jobs:
           done
 
           # ★ CIFS 一族必须全部 not set（2026-11-24 起改走 NFS v3）：整套 cifs.ko 不再
-          #   编译，从根上绕开 7.4-rc3 主线 cifs 的 use-after-free（x24=0xd0d0d0... SLUB
+          #   编译，从根上绕开 7.4-rc4 主线 cifs 的 use-after-free（x24=0xd0d0d0... SLUB
           #   poison），LMS 扫描大量音乐文件时不再 panic。SMB_SERVER 也一并关。
           for s in CIFS CIFS_MD4 CIFS_UPCALL CIFS_DFS_UPCALL SMB_SERVER; do
             if grep -qE "^CONFIG_${s}=[ym]$" .config; then
@@ -922,7 +922,7 @@ jobs:
           echo "=== 已移除符号报告（补丁库 rc3 起不再提供，仅报告不判失败）==="
           # HISI_FESTA_PHY：旧补丁库由 pending-7.4/210-01 提供该 PHY 驱动，
           #   rc3 版重构清单后，整库 126 个补丁里已无一提及 Festa PHY。
-          #   因此它在 7.4-rc3 内核树里不存在，叠加层写它必然被 olddefconfig 丢弃。
+          #   因此它在 7.4-rc4 内核树里不存在，叠加层写它必然被 olddefconfig 丢弃。
           #   本板网口的 PHY 只能另想办法（hisilicon,hisi-femac-v2 自带或固定链路），
           #   留待网口阶段处理；这里只报告，不判失败。
           for s in HISI_FESTA_PHY; do
