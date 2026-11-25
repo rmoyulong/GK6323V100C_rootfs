@@ -1,0 +1,82 @@
+# 北京联通 Q5 (Amlogic S905L / P212 NAND版) Armbian 定制与调优总结
+
+## 一、 核心问题与排查结论
+
+1. **U-Boot 无限重启循环（Synchronous Abort `far 0x44000000`）**
+   * **原因**：主线 U-Boot 2024.01 开启了严格的 LMB 内存保护，而旧版 `boot.scr` 尝试将 `uEnv.txt` 加载到 `0x44000000`（超出物理内存范围或覆盖保留区），导致 CPU 触发非法内存访问异常并不断重启。
+   * **解决**：移除/备份 `BOOT` 分区下的 `boot.scr`，改用适配低内存的 `extlinux/extlinux.conf` 进行引导。
+
+2. **1GB 物理内存仅识别出 407MB（实际硬件探测 512MB）**
+   * **原因**：FIP 封装时使用了 `jethub-j80` 的闭源 `bl2.bin`，该固件在底层初始化 DDR3 时仅探测了 `Rank0: 512MB`（16-bit 单通道），未激活完整 1GB 寻址。
+   * **解决**：改用支持 1GB/2GB 的 GXL FIP 配置（如 `libretech-cc` 或 `p212`），或从北京联通 Q5 原厂 NAND 线刷包中提取 `DDR.USB`（即 `bl2.bin`）替换后重新封装 U-Boot。
+
+3. **Linux 音箱底噪与 Squeezelite 静音优化**
+   * **原因**：声卡自动省电模式切换产生爆音，或未使用的输入/监听通道（`Mic`、`Mic Boost`、`Loopback`）开启导致底噪放大。
+   * **解决**：禁用声卡 `power_save`，并通过 `amixer` 静音所有未使用的输入/环回通道，再用 `alsactl store` 固化状态（Debian 的 `alsa-restore.service` 为静态服务，由 udev 规则在检测到声卡时自动触发加载，无需手动 `enable`）。
+
+---
+
+## 二、 关键操作与命令速查
+
+### 1. 无损替换 TF 卡主线 U-Boot（保留分区表与系统数据）
+> 将新生成的 `u-boot.bin.sd.bin` 写入 TF 卡引导区（假设 TF 卡设备为 `/dev/sda`）：
+```bash
+sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=notrunc,fsync bs=1 count=442
+sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=notrunc,fsync bs=512 skip=1 seek=1
+sync
+```
+
+### 2. 提取原厂 1GB 内存初始化固件（BL2）
+* **方法 A（从盒子内置 NAND 提取，若内核已识别 `/dev/mtd0`）**：
+```bash
+cat /proc/mtd
+sudo dd if=/dev/mtd0 of=~/nand_bootloader.bin bs=1M count=4
+```
+* **方法 B（从原厂线刷包提取并封装主线 U-Boot）**：
+```bash
+# 解包原厂线刷包获取 DDR.USB，覆盖到 amlogic-boot-fip 对应目录
+cp DDR.USB amlogic-boot-fip/p212/bl2.bin
+cd amlogic-boot-fip
+./build-fip.sh p212 ../u-boot/u-boot.bin ../fip_output
+```
+
+### 3. 批量静音 ALSA 多余输入通道并永久保存（针对 Squeezelite）
+```bash
+# 1. 查看声卡编号（确认外接 USB 声卡或板载声卡对应的 card ID）
+aplay -l
+
+# 2. 扫描并静音指定声卡（以 card 0 为例）的所有输入与环回通道
+CARD_ID=0
+amixer -c "\$CARD_ID" scontrols | sed -E "s/.*'([^']+)'.*/\1/" | grep -iE "Mic|Boost|Line|Aux|CD|Beep|Loopback|Capture|Input|ADC|PGA" | while read -r ctrl; do
+    amixer -c "\(CARD_ID" sset "\)ctrl" 0% mute > /dev/null 2>&1
+    amixer -c "\(CARD_ID" sset "\)ctrl" nocap > /dev/null 2>&1
+    amixer -c "\(CARD_ID" sset "\)ctrl" off > /dev/null 2>&1
+    amixer -c "\(CARD_ID" sset "\)ctrl" Disabled > /dev/null 2>&1
+done
+
+# 3. 保存所有声卡混音器状态至 /var/lib/alsa/asound.state
+sudo alsactl store
+```
+
+### 4. 开启 Amlogic 串口终端登录（`ttyAML0`）
+```bash
+sudo mkdir -p /etc/systemd/system/getty.target.wants
+sudo ln -sf /usr/lib/systemd/system/serial-getty@.service \
+  /etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service
+```
+
+### 5. OpenWrt HomeProxy 放行 GitHub 直连
+* **路由规则**：新建规则置于最顶部，出站选择 `direct-out`，域名后缀填入：
+  `github.com`、`githubusercontent.com`、`githubassets.com`、`github.io`、`ghcr.io`、`git.io`
+* **DNS 规则**：新建对应 DNS 规则置于最顶部，指定使用本地直连 DNS 解析上述域名，避免 Fake-IP 劫持。
+
+---
+
+## 三、 Armbian 镜像定制清单（Debian Trixie）
+
+* **预设挂载目录**：`/mnt/{NAS,music,sd,rootfs,boot,usb}`
+* **核心音乐服务**：`Lyrion Music Server (LMS) 9.2.0` + `squeezelite`（需开启 `armhf` 架构支持运行官方 ARM 包）
+* **基础运行依赖**：`ffmpeg`, `alsa-utils`, `alsa-tools`, `ethtool`, `cloud-guest-utils`, `nginx`, `php8.4-cgi`, `php8.4-fpm`, `php8.4-mysql`, `samba`, `samba-common-bin`, `smbclient`, `wsdd2`, `exfat-fuse`, `exfatprogs`, `fake-hwclock` 等。
+
+google ai:
+当你找到原厂线刷包或提取出 DDR.USB / bl2.bin 后，如果需要确认它的有效大小并截取前 49,152 字节（48KB 标准 BL2 长度）用于 FIP 封装，随时把文件信息发给我，我帮你核对。
