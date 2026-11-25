@@ -1,4 +1,4 @@
-name: 构建北京联通Q5 Armbian S905L/P212 (GXL 792MHz 低内存引导版) 镜像
+name: 构建北京联通Q5 Armbian S905L/P212 (GXL 792MHz 16-bit 低内存版 + Trixie + LMS 9.2.0)
 
 on:
   workflow_dispatch:
@@ -12,27 +12,28 @@ permissions:
 
 jobs:
   build-and-release:
-    name: 编译 GXL 混合主线 U-Boot 并生成低内存引导镜像
+    name: 编译 GXL 混合主线 U-Boot 并生成自定义 Trixie 镜像
     runs-on: ubuntu-latest
 
     steps:
       - name: 检出当前仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装交叉编译链与镜像处理依赖
+      - name: 安装交叉编译链、QEMU 模拟器与镜像处理依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             git build-essential gcc-aarch64-linux-gnu \
             bison flex libssl-dev device-tree-compiler \
             python3 python3-dev swig bc u-boot-tools \
-            curl jq parted kpartx dosfstools e2fsprogs util-linux
+            curl jq parted kpartx dosfstools e2fsprogs util-linux \
+            qemu-user-static binfmt-support
 
       - name: 克隆相关源码仓库
         run: |
-          git clone --depth 1 https://github.com/hexdump0815/u-boot-misc.git
-          git clone --depth 1 https://github.com/LibreELEC/amlogic-boot-fip.git
-          git clone --depth 1 -b v2024.01 https://source.denx.de/u-boot/u-boot.git
+          git clone --depth 1 https://github.com
+          git clone --depth 1 https://github.com
+          git clone --depth 1 -b v2024.01 https://denx.de
 
       - name: 编译主线 U-Boot (GXL P212 通用电视盒子配置)
         run: |
@@ -40,7 +41,7 @@ jobs:
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- p212_defconfig
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 
-      - name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
+      - name: 使用 JetHub-J80 (792MHz 16-bit 1080mV) BL2 签名封装 FIP 引导
         run: |
           mkdir -p fip_output
           cd amlogic-boot-fip
@@ -49,76 +50,156 @@ jobs:
           cd ..
           ls -lh fip_output/u-boot.bin.sd.bin
 
-      - name: 下载 Armbian S905X 基础镜像、注入 U-Boot 并预修复 ext4 根分区
+      - name: 下载 Armbian S905X (Trixie) 基础镜像与 LMS 9.2.0
         run: |
-          set -e
-          mkdir -p work && cd work
+          mkdir -p work_img
+          cd work_img
 
-          echo "正在查询最新的 ophub amlogic-s9xxx-armbian 发布版本..."
-          RELEASE_JSON=$(curl -sL https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases/latest)
-          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | startswith("Armbian_") and contains("_amlogic_s905x_") and endswith(".img.gz")) | .browser_download_url' | head -n 1)
-
-          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
-            echo "错误：未能获取到 Armbian S905X 基础镜像下载链接！"
-            exit 1
+          RELEASE_JSON=$(curl -sL https://github.com)
+          IMG_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905x_trixie_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
+          if [ -z "$IMG_URL" ] || [ "$IMG_URL" = "null" ]; then
+            IMG_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("Armbian_.*_amlogic_s905x_.*\\.img\\.gz$")) | .browser_download_url' | head -n 1)
           fi
-
-          echo "正在下载基础镜像: $DOWNLOAD_URL"
-          curl -L "$DOWNLOAD_URL" -o base_armbian.img.gz
-
-          echo "正在解压基础镜像..."
+          curl -L "$IMG_URL" -o base_armbian.img.gz
           gunzip -c base_armbian.img.gz > armbian_s905_p212.img
 
-          echo "正在向镜像写入 792MHz 混合主线 U-Boot（保留 MBR 分区表）..."
+          LMS_URL=$(curl -sL https://lyrion.org | grep -oE 'https://downloads\.lms-community\.org/LyrionMusicServer_v9\.2\.0/lyrionmusicserver_9\.2\.0~[0-9]+_arm\.deb' | head -n 1)
+          if [ -z "$LMS_URL" ]; then
+            LMS_URL="https://lms-community.org"
+          fi
+          curl -L "$LMS_URL" -o lms_9.2.0_arm.deb
+
+      - name: 扩容镜像、注入 U-Boot 并在 Chroot 中安装定制软件与低内存优化
+        run: |
+          set -e
+          cd work_img
+
+          echo "1. 扩容镜像第二分区 (+1500MB)..."
+          P2_START_SECTOR=$(parted -ms armbian_s905_p212.img unit s print | awk -F: '$1=="2"{gsub(/s/,"",$2); print $2}')
+          dd if=/dev/zero bs=1M count=1500 >> armbian_s905_p212.img
+          sudo parted -s armbian_s905_p212.img rm 2
+          sudo parted -s armbian_s905_p212.img unit s mkpart primary ext4 "${P2_START_SECTOR}s" 100%
+
+          echo "2. 写入 792MHz 16-bit 主线 U-Boot..."
           dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=1 count=442
           dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212.img conv=notrunc,fsync bs=512 skip=1 seek=1
 
-          echo "正在关联循环设备并检查修复分区..."
+          echo "3. 关联循环设备并扩展 ext4 文件系统..."
           LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
-
-          # 在打包阶段提前修复 ext4 块位图与 inode 校验和，并禁用首次开机延迟初始化，彻底避免 ext4lazyinit 报错
-          echo "正在对 ROOT 分区 (${LOOP_DEV}p2) 执行 e2fsck 预校验与修复..."
           sudo e2fsck -fy "${LOOP_DEV}p2" || true
           sudo tune2fs -O ^metadata_csum_seed "${LOOP_DEV}p2" 2>/dev/null || true
-          sudo e2fsck -fy "${LOOP_DEV}p2"
+          sudo resize2fs "${LOOP_DEV}p2"
 
-          echo "正在挂载 BOOT 分区并配置适配 512MB 低内存的 extlinux.conf..."
-          sudo mkdir -p /mnt/armbian_boot
+          sudo mkdir -p /mnt/armbian_root /mnt/armbian_boot
+          sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
           sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
 
-          # 移除或备份原有的高内存地址 boot.scr，防止触发 0x44000000 越界崩溃
-          if [ -f /mnt/armbian_boot/boot.scr ]; then
-            sudo mv /mnt/armbian_boot/boot.scr /mnt/armbian_boot/boot.scr.bak
-          fi
+          echo "4. 预建挂载目录、拷贝 LMS 安装包并准备 Chroot 环境..."
+          sudo mkdir -p /mnt/armbian_root/mnt/{NAS,music,sd,rootfs,boot,usb}
+          sudo cp lms_9.2.0_arm.deb /mnt/armbian_root/tmp/
+          sudo cp /usr/bin/qemu-aarch64-static /mnt/armbian_root/usr/bin/
+          sudo cp /usr/bin/qemu-arm-static /mnt/armbian_root/usr/bin/
 
-          # 自动识别内核镜像、initrd 文件名以及根分区 UUID
+          sudo mount --bind /dev /mnt/armbian_root/dev
+          sudo mount --bind /dev/pts /mnt/armbian_root/dev/pts
+          sudo mount -t proc /proc /mnt/armbian_root/proc
+          sudo mount -t sysfs /sys /mnt/armbian_root/sys
+          sudo mv /mnt/armbian_root/etc/resolv.conf /mnt/armbian_root/etc/resolv.conf.bak 2>/dev/null || true
+          sudo cp /etc/resolv.conf /mnt/armbian_root/etc/resolv.conf
+
+          echo "5. 在 Chroot 中安装 Trixie 软件包、LMS 9.2.0 并执行低内存调优..."
+          sudo chroot /mnt/armbian_root /bin/bash -e << 'CHROOT_EOF'
+export DEBIAN_FRONTEND=noninteractive
+
+if ! grep -q "trixie" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
+  sed -i 's/bookworm/trixie/g' /etc/apt/sources.list 2>/dev/null || true
+  sed -i 's/bookworm/trixie/g' /etc/apt/sources.list.d/*.list 2>/dev/null || true
+  sed -i 's/bookworm/trixie/g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+fi
+
+dpkg --add-architecture armhf
+apt-get update
+
+apt-get install -y --no-install-recommends \
+  ffmpeg squeezelite alsa-utils alsa-tools ethtool cloud-guest-utils \
+  nginx php8.4-cgi php8.4-fpm php8.4-mysql \
+  procps iproute2 iputils-ping net-tools vim curl wget \
+  usbutils pciutils dos2unix mtools parted dosfstools e2fsprogs \
+  rsync fake-hwclock sudo samba samba-common-bin smbclient wsdd2 \
+  locales exfat-fuse exfatprogs git zip unzip \
+  libc6:armhf libstdc++6:armhf zlib1g:armhf libcrypt1:armhf
+
+dpkg -i /tmp/lms_9.2.0_arm.deb || apt-get install -f -y
+rm -f /tmp/lms_9.2.0_arm.deb
+
+# PHP 8.4 FPM 省内存按需模式
+if [ -f /etc/php/8.4/fpm/pool.d/www.conf ]; then
+  sed -i 's/^pm = .*/pm = ondemand/' /etc/php/8.4/fpm/pool.d/www.conf
+  sed -i 's/^pm.max_children = .*/pm.max_children = 4/' /etc/php/8.4/fpm/pool.d/www.conf
+  sed -i 's/^;pm.process_idle_timeout = .*/pm.process_idle_timeout = 10s/' /etc/php/8.4/fpm/pool.d/www.conf
+fi
+
+# ZRAM zstd 压缩与内核内存调优 (适配 512MB 物理内存)
+cat > /etc/default/armbian-zram-config << 'ZRAM_EOF'
+ENABLED=true
+ZRAM_PERCENTAGE=120
+MEM_LIMIT_PERCENTAGE=100
+ZRAM_MAX_DEVICES=4
+SWAP_ALGORITHM=zstd
+ZRAM_EOF
+
+cat > /etc/sysctl.d/99-zram-opt.conf << 'SYSCTL_EOF'
+vm.swappiness=150
+vm.watermark_boost_factor=0
+vm.watermark_scale_factor=125
+vm.page-cluster=0
+SYSCTL_EOF
+
+# 启用 ttyAML0 串口终端登录
+mkdir -p /etc/systemd/system/getty.target.wants
+if [ -f /usr/lib/systemd/system/serial-getty@.service ]; then
+  ln -sf /usr/lib/systemd/system/serial-getty@.service /etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service
+elif [ -f /lib/systemd/system/serial-getty@.service ]; then
+  ln -sf /lib/systemd/system/serial-getty@.service /etc/systemd/system/getty.target.wants/serial-getty@ttyAML0.service
+fi
+
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+CHROOT_EOF
+
+          echo "6. 清理 Chroot 挂载并配置低内存 extlinux.conf..."
+          sudo umount /mnt/armbian_root/sys
+          sudo umount /mnt/armbian_root/proc
+          sudo umount /mnt/armbian_root/dev/pts
+          sudo umount /mnt/armbian_root/dev
+          sudo rm -f /mnt/armbian_root/usr/bin/qemu-aarch64-static /mnt/armbian_root/usr/bin/qemu-arm-static
+          sudo mv /mnt/armbian_root/etc/resolv.conf.bak /mnt/armbian_root/etc/resolv.conf 2>/dev/null || true
+
+          [ -f /mnt/armbian_boot/boot.scr ] && sudo mv /mnt/armbian_boot/boot.scr /mnt/armbian_boot/boot.scr.bak
           KERNEL_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uImage|zImage|vmlinuz)' | head -n 1)
           INITRD_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uInitrd|initrd)' | head -n 1)
           ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
 
-          echo "检测到内核文件: $KERNEL_FILE, 内存盘文件: $INITRD_FILE, 根分区 UUID: $ROOT_UUID"
-
           sudo mkdir -p /mnt/armbian_boot/extlinux
-          sudo bash -c "cat > /mnt/armbian_boot/extlinux/extlinux.conf <<EOF
-          LABEL Armbian
-            LINUX /${KERNEL_FILE}
-            INITRD /${INITRD_FILE}
-            FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
-            APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0
-          EOF"
-
-          echo "生成的 extlinux.conf 内容如下："
-          cat /mnt/armbian_boot/extlinux/extlinux.conf
+          sudo bash -c "cat > /mnt/armbian_boot/extlinux/extlinux.conf << 'EXT_EOF'
+LABEL Armbian
+  LINUX /${KERNEL_FILE}
+  INITRD /${INITRD_FILE}
+  FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
+  APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0
+EXT_EOF"
 
           sudo sync
           sudo umount /mnt/armbian_boot
+          sudo umount /mnt/armbian_root
+          sudo e2fsck -fy "${LOOP_DEV}p2"
           sudo losetup -d "${LOOP_DEV}"
+          rm -f base_armbian.img.gz lms_9.2.0_arm.deb
 
           BUILD_DATE=$(date +%Y.%m.%d)
-          OUT_NAME="Armbian_${BUILD_DATE}_s905_p212.img.gz"
-          echo "正在压缩生成最终镜像: $OUT_NAME..."
+          OUT_NAME="Armbian_${BUILD_DATE}_s905_p212_trixie_lms.img.gz"
           gzip -c armbian_s905_p212.img > "../${OUT_NAME}"
-          rm -f base_armbian.img.gz armbian_s905_p212.img
+          rm -f armbian_s905_p212.img
           cd ..
           ls -lh "${OUT_NAME}"
 
@@ -126,24 +207,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: s905L_p212
-          name: Armbian S905L/P212 (GXL 792MHz 低内存引导版) - 北京联通Q5
+          name: Armbian S905L/P212 (792MHz 16-bit + Trixie + LMS 9.2.0) - 北京联通Q5
           body: |
-            针对北京联通 Q5 (Amlogic GXL S905L / P212) 的 Armbian 自动化构建，集成 792MHz DDR3 BL2 + 主线 U-Boot 2024.01、低内存 `extlinux.conf` 引导配置及 `ext4` 根分区预修复。
-
-            ### TF 卡刷写说明 (Debian/Linux)
-            ```bash
-            # 1. 将完整的 Armbian 镜像（已包含 U-Boot、低内存 extlinux.conf 与预修复根分区）写入 TF 卡
-            zcat Armbian_xx_s905_p212.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
-
-            # 2. （可选）单独重新写入主线 U-Boot（保留 MBR 分区表）
-            sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=1 count=442
-            sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=512 skip=1 seek=1
-
-            # 3. 同步缓存并安全弹出
-            sync
-            ```
+            针对北京联通 Q5 (Amlogic GXL S905L / P212 512MB 16-bit) 的 Armbian Trixie 自动化构建，集成 792MHz 主线 U-Boot 2024.01、低内存引导、LMS 9.2.0、Squeezelite、PHP 8.4 FPM（ondemand 模式）及 ZRAM zstd 压缩调优。
           files: |
-            Armbian_*_s905_p212.img.gz
+            Armbian_*_s905_p212_trixie_lms.img.gz
             fip_output/u-boot.bin.sd.bin
           prerelease: false
         env:
