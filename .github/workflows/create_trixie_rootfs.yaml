@@ -211,7 +211,7 @@ jobs:
 
           # 修正为中文环境
           sudo mkdir -p "$ROOTFS_DIR/etc/default"
-          sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/default/locale
+          #sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/default/locale
           sudo cp ${{ github.workspace }}/patch/locale.gen $ROOTFS_DIR/etc/locale.gen
           sudo cp ${{ github.workspace }}/patch/locale.conf $ROOTFS_DIR/etc/locale.conf
 
