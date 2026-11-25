@@ -1,0 +1,2 @@
+cd /
+tar zcvfp  /root/plugins.tar.gz /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins/* /var/lib/squeezeboxserver/prefs/plugin/*  /var/lib/squeezeboxserver/prefs/favorites.opml /var/lib/squeezeboxserver/prefs/server.prefs
