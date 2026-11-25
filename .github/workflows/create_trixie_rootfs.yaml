@@ -287,7 +287,7 @@ jobs:
           locale -a | grep -qi '^zh_CN\.utf8$' || { echo 'FATAL: zh_CN.UTF-8 not generated'; exit 1; }
 
 
-          #git clone --depth 1 https://github.com/rmoyulong/packages_lang_golang golang
+          git clone --depth 1 https://github.com/rmoyulong/packages_lang_golang golang
 
           rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
 
@@ -295,18 +295,10 @@ jobs:
           mkdir -p /var/lib/squeezeboxserver/cache
           mkdir -p /var/log/squeezeboxserver
           
-          # Fetch latest LMS arm/arm64 releases
-          arm_IMG_URL=$(curl -sL "https://lyrion.org/downloads/" \
-            | grep -oE 'https?://[^"]*lyrionmusicserver_[0-9]+\.[0-9]+\.[0-9]+~[0-9]+_arm\.deb' \
-            | tail -n 1)
-          echo $arm_IMG_URL
-
-          wget $arm_IMG_URL -O /tmp/lms_arm.deb
-
-          dpkg -i ./tmp/lms_arm.deb || true
+          dpkg -i ./golang/lms_arm.deb || true
           apt-get --fix-broken install -y
 
-          #rm -rf ./golang
+          rm -rf ./golang
           EOF
           sudo chmod +x "$ROOTFS_DIR/tmp/install-lms.sh"
           sudo chroot "$ROOTFS_DIR" /bin/bash /tmp/install-lms.sh
