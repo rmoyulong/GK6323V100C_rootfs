@@ -169,13 +169,13 @@ jobs:
             exit 1
           fi
 
-          for ld in $(sudo losetup -j armbian_s905_p212_LMS.img | cut -d: -f1); do
+          for ld in $(sudo losetup -j armbian_s905_p212.img | cut -d: -f1); do
             sudo losetup -d "$ld" || true
           done
 
           #================================================================
           echo "正在关联循环设备并修改 boot 分区..."
-          LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212_LMS.img)
+          LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
           sudo partprobe "$LOOP_DEV" 2>/dev/null || true
           sleep 1
 
