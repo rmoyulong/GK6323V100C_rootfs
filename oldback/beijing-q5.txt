@@ -1,4 +1,4 @@
-# 北京联通 Q5 (Amlogic S905L / P212 NAND版) Armbian 定制与调优总结
+# 北京联通 Q5 (Amlogic S905L / P212 NAND版) Armbian 定制与调优总结  Amlogic-O20c-emmc.img.gz
 
 ## 一、 核心问题与排查结论
 

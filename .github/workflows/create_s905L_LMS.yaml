@@ -1,4 +1,4 @@
-name: 北京联通Q5 Armbian S905L/P212 (GXL 792MHz 固定内存地址[0x01080000]) 内核加载版TF/SD内置卡槽启动自用音乐镜像
+name: 北京联通Q5 Armbian S905L/P212 (GXL 792MHz)内核加载版TF/SD内置卡槽启动自用音乐镜像
 
 on:
   workflow_dispatch:
@@ -41,25 +41,25 @@ jobs:
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- p212_defconfig
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 
-      #- name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
-        #run: |
-          #mkdir -p fip_output
-          #cd amlogic-boot-fip
-          #chmod +x build-fip.sh
-          #./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
-          #cd ..
-          #ls -lh fip_output/u-boot.bin.sd.bin
-          
-      #如果 lafrite 无法过内存测试（例如频率过高），我们只需把第 2 处的 lafrite 换成 lepotato 即可    
-      - name: 使用 LaFrite (32-bit 1GB 低频稳压) BL2 签名封装 FIP 引导
+      - name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
         run: |
           mkdir -p fip_output
           cd amlogic-boot-fip
           chmod +x build-fip.sh
-          ./build-fip.sh lepotato ../u-boot/u-boot.bin ../fip_output
+          ./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
           cd ..
-          mv fip_output/u-boot.bin.sd.bin fip_output/LaFrite_u-boot.bin.sd.bin
-          ls -lh fip_output/LaFrite_u-boot.bin.sd.bin
+          ls -lh fip_output/u-boot.bin.sd.bin
+          
+      #如果 lafrite 无法过内存测试（例如频率过高），我们只需把第 2 处的 lafrite 换成 lepotato 即可    
+      #- name: 使用 LaFrite (32-bit 1GB 低频稳压) BL2 签名封装 FIP 引导
+        #run: |
+          #mkdir -p fip_output
+          #cd amlogic-boot-fip
+          #chmod +x build-fip.sh
+          #./build-fip.sh lepotato ../u-boot/u-boot.bin ../fip_output
+          #cd ..
+          #mv fip_output/u-boot.bin.sd.bin fip_output/u-boot.bin.sd.bin
+          #ls -lh fip_output/u-boot.bin.sd.bin
 
       - name: 下载 Armbian S905X 基础镜像
         run: |
@@ -406,8 +406,8 @@ jobs:
           sudo losetup -d "${LOOP_DEV}"
 
           echo "正在向镜像写入 LaFrite 混合主线 U-Boot（保留 MBR 分区表）..."
-          dd if=../fip_output/LaFrite_u-boot.bin.sd.bin of=armbian_s905_p212_LMS.img conv=notrunc,fsync bs=1 count=442
-          dd if=../fip_output/LaFrite_u-boot.bin.sd.bin of=armbian_s905_p212_LMS.img conv=notrunc,fsync bs=512 skip=1 seek=1
+          dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212_LMS.img conv=notrunc,fsync bs=1 count=442
+          dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212_LMS.img conv=notrunc,fsync bs=512 skip=1 seek=1
           sync
 
           BUILD_DATE=$(date +%Y.%m.%d)
@@ -435,15 +435,15 @@ jobs:
             zcat Armbian_xx_s905_p212.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
 
             # 2. （可选）单独重新写入主线 U-Boot（保留 MBR 分区表）
-            sudo dd if=LaFrite_u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=1 count=442
-            sudo dd if=LaFrite_u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=512 skip=1 seek=1
+            sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=1 count=442
+            sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=512 skip=1 seek=1
 
             # 3. 同步缓存并安全弹出
             sync
             ```
           files: |
             *.img.gz
-            fip_output/LaFrite_u-boot.bin.sd.bin
+            fip_output/u-boot.bin.sd.bin
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
