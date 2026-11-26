@@ -41,14 +41,24 @@ jobs:
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- p212_defconfig
           make ARCH=arm CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 
-      - name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
+      #- name: 使用 JetHub-J80 (792MHz DDR3) BL2 签名封装 FIP 引导
+        #run: |
+          #mkdir -p fip_output
+          #cd amlogic-boot-fip
+          #chmod +x build-fip.sh
+          #./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
+          #cd ..
+          #ls -lh fip_output/u-boot.bin.sd.bin
+          
+      #如果 lafrite 无法过内存测试（例如频率过高），我们只需把第 2 处的 lafrite 换成 lepotato 即可    
+      - name: 使用 LaFrite (32-bit 1GB 低频稳压) BL2 签名封装 FIP 引导
         run: |
           mkdir -p fip_output
           cd amlogic-boot-fip
           chmod +x build-fip.sh
-          ./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
+          ./build-fip.sh lafrite ../u-boot/u-boot.bin ../fip_output
           cd ..
-          ls -lh fip_output/u-boot.bin.sd.bin
+          ls -lh fip_output/LaFrite_u-boot.bin.sd.bin
 
       - name: 下载 Armbian S905X 基础镜像
         run: |
@@ -56,11 +66,11 @@ jobs:
           cd work_img
           
             #Fetch latest S905X (GXL) Armbian image URL from rmoyulong releases
-            IMG_URL=$(curl -sL "https://api.github.com/repos/rmoyulong/amlogic-s9xxx-armbian/releases?per_page=2" \
+            IMG_URL=$(curl -sL "https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=10" \
               | jq -r '.[] 
                 | select(.tag_name | test("trixie"; "i")) 
                 | .assets[] 
-                | select(.name | test("Armbian_.*_amlogic_s905l_trixie_.*\\.img\\.gz$")) 
+                | select(.name | test("Armbian_.*_amlogic_s905x_trixie_.*\\.img\\.gz$")) 
                 | .browser_download_url' \
               | head -n 1)
               
@@ -404,26 +414,32 @@ jobs:
             sudo mkdir -p /mnt/armbian_boot
             sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
 
-            if [ -f /mnt/armbian_boot/boot.scr ]; then
-              sudo mv /mnt/armbian_boot/boot.scr /mnt/armbian_boot/boot.scr.bak
-            fi
+              # 移除或备份原有的高内存地址 boot.scr，防止触发 0x44000000 越界崩溃
+              if [ -f /mnt/armbian_boot/boot.scr ]; then
+                sudo mv /mnt/armbian_boot/boot.scr /mnt/armbian_boot/boot.scr.bak
+              fi
+              
+              if [ -f /mnt/armbian_boot/boot.cmd ]; then
+                sudo mv /mnt/armbian_boot/boot.cmd /mnt/armbian_boot/boot.cmd.bak
+              f
 
-            KERNEL_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uImage|zImage|vmlinuz)' | head -n 1)
-            INITRD_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uInitrd|initrd)' | head -n 1)
-            ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+              # 自动识别内核镜像、initrd 文件名以及根分区 UUID
+              KERNEL_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uImage|zImage|vmlinuz)' | head -n 1)
+              INITRD_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uInitrd|initrd)' | head -n 1)
+              ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
 
-            echo "检测到内核文件: $KERNEL_FILE, 内存盘文件: $INITRD_FILE, 根分区 UUID: $ROOT_UUID"
+              echo "检测到内核文件: $KERNEL_FILE, 内存盘文件: $INITRD_FILE, 根分区 UUID: $ROOT_UUID"
 
-            sudo mkdir -p /mnt/armbian_boot/extlinux
-            sudo bash -c "cat > /mnt/armbian_boot/extlinux/extlinux.conf <<EOF
-            LABEL Armbian
-              LINUX /${KERNEL_FILE}
-              INITRD /${INITRD_FILE}
-              FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
-              APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw rootwait rootfstype=ext4 console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 max_loop=128 plymouth.enable=0 cma=32M
-              #末尾增加cma=32M 检查DRAM 是否成功识别为 1024 MiB（1 GiB）
-              #APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
-            EOF"
+              sudo mkdir -p /mnt/armbian_boot/extlinux
+              sudo bash -c "cat > /mnt/armbian_boot/extlinux/extlinux.conf <<EOF
+              LABEL Armbian
+                LINUX /${KERNEL_FILE}
+                INITRD /${INITRD_FILE}
+                FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
+                  #APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw rootwait rootfstype=ext4 console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 max_loop=128 plymouth.enable=0
+                  #末尾增加cma=32M 检查DRAM 是否成功识别为 1024 MiB（1 GiB）
+                  APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
+              EOF"
 
             echo "生成的 extlinux.conf 内容如下："
             cat /mnt/armbian_boot/extlinux/extlinux.conf
