@@ -200,9 +200,9 @@ jobs:
               sudo mkdir -p /mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
 
               # banner
-              sudo mkdir -p "/etc/update-motd.d"
+              sudo mkdir -p /etc/update-motd.d
               sudo cp /tmp/patch/cats_banner /etc/cats_banner
-              sudo tee "/etc/update-motd.d/40-cats_banner" > /dev/null <<'EOF'
+              sudo tee /etc/update-motd.d/40-cats_banner > /dev/null <<'EOF'
               #!/bin/bash
               set -o pipefail
               cat /etc/cats_banner
@@ -214,12 +214,12 @@ jobs:
               sudo ln -s /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 
               # 修正为中文环境
-              sudo mkdir -p "/etc/default"
+              sudo mkdir -p /etc/default
               sudo cp /tmp/patch/locale.conf /etc/default/locale.conf
               sudo cp /tmp/patch/locale.gen /etc/locale.gen
               sudo cp /tmp/patch/locale.conf /etc/locale.conf
               
-              sudo tee "/etc/default/armbian-zram-config" > /dev/null <<'EOF'
+              sudo tee /etc/default/armbian-zram-config > /dev/null <<'EOF'
               ENABLED=true
               ZRAM_PERCENTAGE=120
               MEM_LIMIT_PERCENTAGE=100
@@ -227,8 +227,8 @@ jobs:
               SWAP_ALGORITHM=zstd
               EOF
 
-              sudo mkdir -p "/etc/sysctl.d"
-              sudo tee "/etc/sysctl.d/99-lms-network.conf" > /dev/null <<'EOF'
+              sudo mkdir -p /etc/sysctl.d
+              sudo tee /etc/sysctl.d/99-lms-network.conf > /dev/null <<'EOF'
               # LMS 高解析度音乐异步推流网络优化
               net.core.somaxconn = 1024
               net.core.netdev_max_backlog = 5000
@@ -237,10 +237,10 @@ jobs:
               net.ipv4.tcp_rmem = 4096 87380 16777216
               net.ipv4.tcp_wmem = 4096 65536 16777216
               EOF
-              echo "----- 99-lms-network.conf -----"
-              cat "/etc/sysctl.d/99-lms-network.conf"
+              echo '----- 99-lms-network.conf -----'
+              cat /etc/sysctl.d/99-lms-network.conf
               
-              sudo tee "/etc/sysctl.d/97-zram-opt.conf" > /dev/null <<'EOF'
+              sudo tee /etc/sysctl.d/97-zram-opt.conf > /dev/null <<'EOF'
               vm.swappiness=150
               vm.watermark_boost_factor=0
               vm.watermark_scale_factor=125
@@ -253,12 +253,12 @@ jobs:
               #################### 必要的设置结束 ######################
 
               #################建立启动后运行一次的脚本-开始################################################
-              sudo mkdir -p "$ROOTFS_DIR/etc/systemd/system"
+              sudo mkdir -p $ROOTFS_DIR/etc/systemd/system
               # 注意：这里不能写 After=multi-user.target，
               # 否则与该服务自己的 WantedBy=multi-user.target 构成 ordering cycle，
               # systemd 会打断它、启动时机不确定，导致 resize2fs 不按预期执行。
               # 改为在 local-fs.target 之后（根分区已挂载）即可，且不产生环。
-              sudo tee "$ROOTFS_DIR/etc/systemd/system/resize-once.service" > /dev/null <<'EOF'
+              sudo tee $ROOTFS_DIR/etc/systemd/system/resize-once.service > /dev/null <<'EOF'
               [Unit]
               Description=One-time resize script
               After=local-fs.target
@@ -275,7 +275,7 @@ jobs:
 
               # 注意：刻意不用 set -e。若某个 chown 因文件缺失返回非零就提前退出，
               # 后面的 resize2fs 便不会执行、首次开机扩容会失效。
-              sudo tee "$ROOTFS_DIR/etc/resize.sh" > /dev/null <<'EOF'
+              sudo tee $ROOTFS_DIR/etc/resize.sh > /dev/null <<'EOF'
               #!/bin/bash
               set -uo pipefail
 
@@ -330,7 +330,7 @@ jobs:
               apt-get --fix-broken install -y
 
               # ---------- squeezelite 的 ALSA 输出 ----------
-              sudo tee "/etc/default/squeezelite" > /dev/null <<'EOF'
+              sudo tee /etc/default/squeezelite > /dev/null <<'EOF'
               # Defaults for squeezelite initscript
               # sourced by /etc/init.d/squeezelite
               # installed at /etc/default/squeezelite by the maintainer scripts
@@ -346,13 +346,13 @@ jobs:
               SB_EXTRA_ARGS="-p 99 -r 44100-48000 -b 2048:3445 -C 5"
               EOF
 
-              echo "----- /etc/default/squeezelite -----"
-              sudo cat "/etc/default/squeezelite"
+              echo '----- /etc/default/squeezelite -----'
+              sudo cat /etc/default/squeezelite
 
               # ---------- LMS plugins：解压到正确目录 ----------
-              sudo mkdir -p "/var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins"
-              sudo mkdir -p "/var/lib/squeezeboxserver/prefs/plugin"
-              sudo tar zxvfp "./golang/plugins.tar.gz" -C "/var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins"
+              sudo mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
+              sudo mkdir -p /var/lib/squeezeboxserver/prefs/plugin
+              sudo tar zxvfp ./golang/plugins.tar.gz -C /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
               rm -rf ./golang
 
               systemctl enable lyrionmusicserver || true
