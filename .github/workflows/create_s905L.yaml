@@ -120,17 +120,18 @@ jobs:
             sudo chroot /mnt/armbian_root /bin/bash -c "
               export DEBIAN_FRONTEND=noninteractive
 
-              sudo mkdir -p /etc/apt
-                tee /etc/apt/sources.list > /dev/null <<'EOF'
-                deb http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
-                deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
-                #
-                deb http://mirrors.aliyun.com/debian-archive/debian-security bullseye-security main contrib non-free
-                deb-src http://mirrors.aliyun.com/debian-archive/debian-security bullseye-security main contrib non-free
-                #
-                deb http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main contrib non-free
-                deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main contrib non-free
-                EOF
+            # 阿里云 Debian 11 (bullseye) 存档源
+            sudo mkdir -p /etc/apt
+sudo tee /etc/apt/sources.list > /dev/null <<'EOF'
+deb http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
+deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
+#
+deb http://mirrors.aliyun.com/debian-archive/debian-security bullseye-security main contrib non-free
+deb-src http://mirrors.aliyun.com/debian-archive/debian-security bullseye-security main contrib non-free
+#
+deb http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main contrib non-free
+deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main contrib non-free
+EOF
             "
 
           # =====================================================================
