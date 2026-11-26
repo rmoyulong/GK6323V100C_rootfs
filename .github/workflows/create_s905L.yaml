@@ -121,6 +121,7 @@ jobs:
             export DEBIAN_FRONTEND=noninteractive 
             
             # 阿里云 Debian 11 (bullseye) 存档源
+            sudo mkdir -p /etc/apt
             cat > /etc/apt/sources.list <<EOF
             deb http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
             deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
