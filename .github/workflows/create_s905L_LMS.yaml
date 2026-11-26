@@ -361,7 +361,7 @@ EOF
           sudo partprobe "$LOOP_DEV" 2>/dev/null || true
           sleep 1
 
-          echo "正在挂载 BOOT 分区并配置适配 512MB 低内存的 extlinux.conf..."
+          echo "正在挂载 BOOT 分区..."
           sudo mkdir -p /mnt/armbian_boot
           sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
 
