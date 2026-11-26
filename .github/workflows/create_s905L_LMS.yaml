@@ -191,22 +191,20 @@ jobs:
 
             sudo mkdir -p /etc/update-motd.d
             sudo cp /tmp/patch/cats_banner /etc/cats_banner
-            sudo tee /etc/update-motd.d/40-cats-banner > /dev/null <<'EOF'
+            sudo tee /etc/update-motd.d/40-cats-banner > /dev/null <<EOF
             #!/bin/bash
             set -o pipefail
             cat /etc/cats_banner
             EOF
+            
             sudo chmod +x /etc/update-motd.d/40-cats_banner
-
             sudo rm -rf /etc/localtime
             sudo ln -s /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-
             sudo mkdir -p /etc/default
             sudo cp /tmp/patch/locale.conf /etc/default/locale.conf
             sudo cp /tmp/patch/locale.gen /etc/locale.gen
             sudo cp /tmp/patch/locale.conf /etc/locale.conf
-
-            sudo tee /etc/default/armbian-zram-config > /dev/null <<'EOF'
+            udo tee /etc/default/armbian-zram-config > /dev/null <<EOF
             ENABLED=true
             ZRAM_PERCENTAGE=120
             MEM_LIMIT_PERCENTAGE=100
@@ -215,7 +213,7 @@ jobs:
             EOF
 
             sudo mkdir -p /etc/sysctl.d
-            sudo tee /etc/sysctl.d/99-lms-network.conf > /dev/null <<'EOF'
+            sudo tee /etc/sysctl.d/99-lms-network.conf > /dev/null <<EOF
             # LMS 高解析度音乐异步推流网络优化
             net.core.somaxconn = 1024
             net.core.netdev_max_backlog = 5000
@@ -227,7 +225,7 @@ jobs:
             echo '----- 99-lms-network.conf -----'
             cat /etc/sysctl.d/99-lms-network.conf
 
-            sudo tee /etc/sysctl.d/97-zram-opt.conf > /dev/null <<'EOF'
+            sudo tee /etc/sysctl.d/97-zram-opt.conf > /dev/null <<EOF
             vm.swappiness=150
             vm.watermark_boost_factor=0
             vm.watermark_scale_factor=125
@@ -240,17 +238,15 @@ jobs:
 
             #################建立启动后运行一次的脚本-开始################################################
             sudo mkdir -p /etc/systemd/system
-            sudo tee /etc/systemd/system/resize-once.service > /dev/null <<'EOF'
+            sudo tee /etc/systemd/system/resize-once.service > /dev/null <<EOF
             [Unit]
             Description=One-time resize script
             After=local-fs.target
             ConditionPathExists=/etc/resize.sh
-
             [Service]
             Type=oneshot
             ExecStart=/etc/resize.sh
             RemainAfterExit=no
-
             [Install]
             WantedBy=multi-user.target
             EOF
@@ -258,23 +254,19 @@ jobs:
             sudo tee /etc/resize.sh > /dev/null <<'EOF'
             #!/bin/bash
             set -uo pipefail
-
             [ -e /etc/sudo.conf ] && chown root:root /etc/sudo.conf
             [ -e /etc/sudoers ]   && chown root:root /etc/sudoers
             [ -d /etc/sudoers.d ] && chown -R root:root /etc/sudoers.d
             [ -e /usr/bin/sudo ]  && chown root:root /usr/bin/sudo
             [ -e /usr/bin/sudo ]  && chmod 4755 /usr/bin/sudo
-
             ROOT_PART=$(findmnt -n -o SOURCE /)
             resize2fs "$ROOT_PART"
-
             if id squeezeboxserver >/dev/null 2>&1; then
               chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs 2>/dev/null
               chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache 2>/dev/null
               chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver 2>/dev/null
             fi
             systemctl restart lyrionmusicserver 2>/dev/null
-
             systemctl disable resize-once.service 2>/dev/null
             rm -f /etc/systemd/system/resize-once.service
             rm -f /etc/resize.sh
@@ -292,7 +284,6 @@ jobs:
             apt-get install -y locales
 
             locale-gen zh_CN.UTF-8
-
             git clone https://github.com/rmoyulong/packages_lang_golang golang
 
             rm -rf /var/lib/squeezeboxserver /var/log/squeezeboxserver
@@ -303,18 +294,15 @@ jobs:
             dpkg -i ./golang/lms_arm.deb || true
             apt-get --fix-broken install -y
 
-            sudo tee /etc/default/squeezelite > /dev/null <<'EOF'
+            sudo tee /etc/default/squeezelite > /dev/null <<EOF
             # Defaults for squeezelite initscript
             # sourced by /etc/init.d/squeezelite
             # installed at /etc/default/squeezelite by the maintainer scripts
-
             # The name for the squeezelite player:
             SL_NAME="Squeezelite"
-
             # ALSA output device
             # hw:1,0 为硬件直通；若采样率不匹配导致中断，改用 plughw:1,0
             SL_SOUNDCARD="hw:1,0"
-
             # Additional options to pass to squeezelite:
             SB_EXTRA_ARGS="-D dop -p 85 -b 2048:4096"
             EOF
