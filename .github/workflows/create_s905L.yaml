@@ -173,7 +173,7 @@ jobs:
             sync
             ```
           files: |
-            Armbian_*_s905_p212.img.gz
+            *.img.gz
             fip_output/LaFrite_u-boot.bin.sd.bin
           prerelease: false
         env:
