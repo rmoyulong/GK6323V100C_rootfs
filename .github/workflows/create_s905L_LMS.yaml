@@ -85,7 +85,7 @@ jobs:
           curl -L "$IMG_URL" -o base_armbian.img.gz
           gunzip -c base_armbian.img.gz > armbian_s905_p212_LMS.img
 
-      - name: 注入 U-Boot、配置低内存引导并预装 squeezelite 与 wsdd2
+      - name: 注入 U-Boot、配置低内存引导并预装 squeezelite
         run: |
           set -e
           cd work_img
@@ -189,7 +189,7 @@ jobs:
             EOF
             
             apt-get update
-            apt-get install -y --no-install-recommends dos2unix net-tools cifs-utils ethtool screen wget curl sudo file mtools nginx php8.4-cgi php8.4-fpm usbutils
+            apt-get install -y --no-install-recommends dos2unix net-tools cifs-utils ethtool screen wget curl sudo file mtools usbutils
             apt-get install -y --no-install-recommends squeezelite alsa-utils alsa-tools ffmpeg locales
 
             #################### 必要的设置开始 ######################
