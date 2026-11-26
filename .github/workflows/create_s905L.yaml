@@ -193,7 +193,7 @@ jobs:
           echo "检测到内核文件: $KERNEL_FILE, 内存盘文件: $INITRD_FILE, 根分区 UUID: $ROOT_UUID"
 
           sudo mkdir -p /mnt/armbian_boot/extlinux
-          sudo tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null <<'EOF'
+          sudo tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null <<EOF
               LABEL Armbian
                 LINUX /${KERNEL_FILE}
                 INITRD /${INITRD_FILE}
