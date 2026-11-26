@@ -178,7 +178,7 @@ jobs:
             
             # 阿里云 Debian 11 (bullseye) 存档源
             sudo mkdir -p /etc/apt
-            cat > /etc/apt/sources.list <<EOF
+            sudo tee /etc/apt/sources.list> /dev/null <<'EOF'
             deb http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
             deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
 
@@ -198,7 +198,7 @@ jobs:
 
             sudo mkdir -p /etc/update-motd.d
             sudo cp /tmp/patch/cats_banner /etc/cats_banner
-            sudo tee /etc/update-motd.d/40-cats_banner > /dev/null <<'EOF'
+            sudo tee /etc/update-motd.d/40-cats-banner > /dev/null <<'EOF'
             #!/bin/bash
             set -o pipefail
             cat /etc/cats_banner
