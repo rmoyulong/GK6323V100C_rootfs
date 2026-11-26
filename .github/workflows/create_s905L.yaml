@@ -67,14 +67,13 @@ jobs:
           mkdir -p work_img
           cd work_img
 
-            #Fetch latest S905X (GXL) Armbian image URL from rmoyulong releases
-            IMG_URL=$(curl -sL "https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=10" \
-              | jq -r '.[] 
-                | select(.tag_name | test("trixie"; "i")) 
-                | .assets[] 
-                | select(.name | test("Armbian_.*_amlogic_s905x_trixie_.*\\.img\\.gz$")) 
-                | .browser_download_url' \
-              | head -n 1)
+          IMG_URL=$(curl -sL "https://api.github.com/repos/yifengyou/amlogic-s9xxx-armbian/releases?per_page=10" \
+            | jq -r '.[] 
+              | select(.tag_name | test("bullseye_save_2025.01"; "i"))   
+              | .assets[] 
+              | select(.name | test("Armbian_.*_amlogic_s905x_bullseye_6.1.126_.*\\.img\\.gz$")) 
+              | .browser_download_url' \
+            | head -n 1)
 
           echo "匹配到的下载链接: $IMG_URL"
 
@@ -94,14 +93,92 @@ jobs:
 
           echo "正在关联循环设备并检查修复分区..."
           LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212.img)
+          
+          # ================= 挂载 ROOT 分区并安装软件 =================
+          echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite..."
+          sudo mkdir -p /mnt/armbian_root
+          sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
 
-          # 在打包阶段提前修复 ext4 块位图与 inode 校验和，并禁用首次开机延迟初始化，彻底避免 ext4lazyinit 报错
-          echo "正在对 ROOT 分区 (${LOOP_DEV}p2) 执行 e2fsck 预校验与修复..."
-          sudo e2fsck -fy "${LOOP_DEV}p2" || true
-          sudo tune2fs -O ^metadata_csum_seed "${LOOP_DEV}p2" 2>/dev/null || true
-          sudo e2fsck -fy "${LOOP_DEV}p2"
+          sudo mkdir -p /mnt/armbian_root/tmp/patch
+          sudo cp -a "${{ github.workspace }}/patch/." /mnt/armbian_root/tmp/patch/
 
-          echo "正在挂载 BOOT 分区并配置适配 512MB 低内存的 extlinux.conf..."
+          if [ -L /mnt/armbian_root/etc/resolv.conf ]; then
+            sudo mv /mnt/armbian_root/etc/resolv.conf /mnt/armbian_root/etc/resolv.conf.bak
+          elif [ -f /mnt/armbian_root/etc/resolv.conf ]; then
+            sudo cp -a /mnt/armbian_root/etc/resolv.conf /mnt/armbian_root/etc/resolv.conf.bak
+          fi
+          sudo cp /etc/resolv.conf /mnt/armbian_root/etc/resolv.conf
+
+          sudo cp /usr/bin/qemu-aarch64 /mnt/armbian_root/usr/bin/
+          sudo mount -t proc /proc /mnt/armbian_root/proc
+          sudo mount -t sysfs /sys /mnt/armbian_root/sys
+          sudo mount -o bind /dev /mnt/armbian_root/dev
+          sudo mount -o bind /dev/pts /mnt/armbian_root/dev/pts
+
+          # 第一轮 chroot：基础包 + 系统配置
+          sudo chroot /mnt/armbian_root /bin/bash -c "
+            export DEBIAN_FRONTEND=noninteractive 
+            
+            # 阿里云 Debian 11 (bullseye) 存档源
+            cat > /etc/apt/sources.list <<EOF
+            deb http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
+            deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
+
+            deb http://mirrors.aliyun.com/debian-archive/debian-security bullseye-security main contrib non-free
+            deb-src http://mirrors.aliyun.com/debian-archive/debian-security bullseye-security main contrib non-free
+
+            deb http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main contrib non-free
+            deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main contrib non-free
+            EOF
+          "
+
+          # =====================================================================
+          # 收尾
+          # =====================================================================
+          echo "正在清理 chroot 环境..."
+          sudo sync
+          sleep 2
+
+          sudo umount /mnt/armbian_root/dev/pts 2>/dev/null || sudo umount -lf /mnt/armbian_root/dev/pts
+          sudo umount /mnt/armbian_root/dev      2>/dev/null || sudo umount -lf /mnt/armbian_root/dev
+          sudo umount /mnt/armbian_root/sys      2>/dev/null || sudo umount -lf /mnt/armbian_root/sys
+          sudo umount /mnt/armbian_root/proc     2>/dev/null || sudo umount -lf /mnt/armbian_root/proc
+
+          sudo rm -f /mnt/armbian_root/usr/bin/qemu-aarch64
+          sudo rm -f /mnt/armbian_root/etc/resolv.conf
+          if [ -e /mnt/armbian_root/etc/resolv.conf.bak ] || [ -L /mnt/armbian_root/etc/resolv.conf.bak ]; then
+            sudo mv /mnt/armbian_root/etc/resolv.conf.bak /mnt/armbian_root/etc/resolv.conf
+          fi
+          sudo rm -rf /mnt/armbian_root/tmp/patch
+
+          sudo sync
+          sleep 2
+
+          sudo mount -o remount,ro /mnt/armbian_root || true
+          sleep 1
+          sudo umount /mnt/armbian_root
+          sleep 2
+
+          echo "正在对 ROOT 分区做最终 e2fsck 修复..."
+          rc=0
+          sudo e2fsck -fy "${LOOP_DEV}p2" || rc=$?
+          if [ "${rc:-0}" -gt 2 ]; then
+            echo "最终 e2fsck 返回 ${rc}，文件系统仍有错" >&2
+            sudo losetup -d "$LOOP_DEV"
+            exit 1
+          fi
+
+          for ld in $(sudo losetup -j armbian_s905_p212_LMS.img | cut -d: -f1); do
+            sudo losetup -d "$ld" || true
+          done
+
+          #================================================================
+          echo "正在关联循环设备并修改 boot 分区..."
+          LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212_LMS.img)
+          sudo partprobe "$LOOP_DEV" 2>/dev/null || true
+          sleep 1
+
+          echo "正在挂载 BOOT 分区..."
           sudo mkdir -p /mnt/armbian_boot
           sudo mount "${LOOP_DEV}p1" /mnt/armbian_boot
 
