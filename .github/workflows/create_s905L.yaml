@@ -55,7 +55,7 @@ jobs:
           mkdir -p fip_output
           cd amlogic-boot-fip
           chmod +x build-fip.sh
-          ./build-fip.sh lafrite ../u-boot/u-boot.bin ../fip_output
+          ./build-fip.sh lepotato ../u-boot/u-boot.bin ../fip_output
           cd ..
           mv fip_output/u-boot.bin.sd.bin fip_output/LaFrite_u-boot.bin.sd.bin
           ls -lh fip_output/LaFrite_u-boot.bin.sd.bin
