@@ -122,7 +122,7 @@ jobs:
 
             # 阿里云 Debian 11 (bullseye) 存档源
             sudo mkdir -p /etc/apt
-sudo tee /etc/apt/sources.list > /dev/null <<'EOF'
+            sudo tee /etc/apt/sources.list > /dev/null <<'EOF'
 deb http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
 deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
 #
