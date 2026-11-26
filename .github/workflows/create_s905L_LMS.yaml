@@ -85,9 +85,9 @@ jobs:
           curl -L "$IMG_URL" -o base_armbian.img.gz
           gunzip -c base_armbian.img.gz > armbian_s905_p212_LMS.img
 
-      - name: 注入 U-Boot、配置低内存引导并预装 squeezelite
+      - name: 注入 U-Boot、安装老armbian版本及配置低内存引导、预装 squeezelite
         run: |
-          set -e
+          #set -e
           cd work_img
 
           ############### 给 p2 扩容 500M 开始 ######################################
