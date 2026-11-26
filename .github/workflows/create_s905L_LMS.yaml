@@ -204,7 +204,7 @@ jobs:
             sudo cp /tmp/patch/locale.conf /etc/default/locale.conf
             sudo cp /tmp/patch/locale.gen /etc/locale.gen
             sudo cp /tmp/patch/locale.conf /etc/locale.conf
-            udo tee /etc/default/armbian-zram-config > /dev/null <<EOF
+            sudo tee /etc/default/armbian-zram-config > /dev/null <<EOF
             ENABLED=true
             ZRAM_PERCENTAGE=120
             MEM_LIMIT_PERCENTAGE=100
@@ -225,6 +225,7 @@ jobs:
             echo '----- 99-lms-network.conf -----'
             cat /etc/sysctl.d/99-lms-network.conf
 
+            sudo mkdir -p /etc/sysctl.d
             sudo tee /etc/sysctl.d/97-zram-opt.conf > /dev/null <<EOF
             vm.swappiness=150
             vm.watermark_boost_factor=0
@@ -250,7 +251,8 @@ jobs:
             [Install]
             WantedBy=multi-user.target
             EOF
-
+            
+            #对rootfs扩容
             sudo tee /etc/resize.sh > /dev/null <<'EOF'
             #!/bin/bash
             set -uo pipefail
@@ -261,11 +263,6 @@ jobs:
             [ -e /usr/bin/sudo ]  && chmod 4755 /usr/bin/sudo
             ROOT_PART=$(findmnt -n -o SOURCE /)
             resize2fs "$ROOT_PART"
-            if id squeezeboxserver >/dev/null 2>&1; then
-              chown squeezeboxserver:nogroup /var/lib/squeezeboxserver/prefs 2>/dev/null
-              chown -R squeezeboxserver:nogroup /var/lib/squeezeboxserver/cache 2>/dev/null
-              chown -R squeezeboxserver:nogroup /var/log/squeezeboxserver 2>/dev/null
-            fi
             systemctl restart lyrionmusicserver 2>/dev/null
             systemctl disable resize-once.service 2>/dev/null
             rm -f /etc/systemd/system/resize-once.service
@@ -293,17 +290,9 @@ jobs:
 
             dpkg -i ./golang/lms_arm.deb || true
             apt-get --fix-broken install -y
-
             sudo tee /etc/default/squeezelite > /dev/null <<EOF
-            # Defaults for squeezelite initscript
-            # sourced by /etc/init.d/squeezelite
-            # installed at /etc/default/squeezelite by the maintainer scripts
-            # The name for the squeezelite player:
             SL_NAME="Squeezelite"
-            # ALSA output device
-            # hw:1,0 为硬件直通；若采样率不匹配导致中断，改用 plughw:1,0
             SL_SOUNDCARD="hw:1,0"
-            # Additional options to pass to squeezelite:
             SB_EXTRA_ARGS="-D dop -p 85 -b 2048:4096"
             EOF
 
