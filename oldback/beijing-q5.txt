@@ -137,3 +137,194 @@ free -m
 请谨慎使用此类代码。
 
 =================================================
+############################################################################################
+答案就藏在你上传的 s905_autoscript.cmd 第 1 行和第 7–11 行里！这张盘必须加载 zImage（而不是 vmlinuz-3.14.29）和根目录下的 dtb.img（Amlogic 加密/多合一格式设备树），而且内核加载地址必须设在 0x11000000（避开 0x01000000–0x10200000 处的 BL31 安全监控内存区），否则解压内核会直接覆盖 BL31 固件导致死机！
+
+破译你上传的官方脚本关键秘密
+
+1. 之前卡死在 Starting kernel ... 的真正元凶：
+	• 之前用 extlinux.conf 时，U-Boot 把内核移动到了 0x01080000（Moving Image from 0x8080000 to 0x1080000, end=2689000），而你在前面主线内核日志里见过，Amlogic 3.14.29 对应的 BL31 安全固件占用了 0x05000000–0x072fffff 以及 0x10000000–0x101fffff！内核一解压直接踩穿了 BL31 内存区，CPU 当场锁死！
+	• 而你上传的原生脚本里明确指定了 kernel_loadaddr "0x11000000" 和 initrd_loadaddr "0x13000000"——完美避开了 0x10200000 以下所有的安全保留区，且全部落在 512MB（0x1fffffff）安全内存之内！
+2. 必须用 zImage + 根目录 dtb.img：
+	• 脚本加载的是 zImage（不是 vmlinuz-3.14.29）和根目录下的 dtb.img。
+
+立即让这张 3.14.29 盘成功启动的精确命令（Debian 终端）
+
+直接在你的 Debian 电脑上运行以下命令，把原脚本精确翻译成主线 U-Boot 2024.01 专用的 boot.scr（移除无效的 extlinux 文件夹）：
+bash
+# 1. 确保已安装 mkimage 工具并挂载 TF 卡第一分区
+sudo apt-get update && sudo apt-get install -y u-boot-tools
+sudo mkdir -p /mnt/tf_boot
+sudo mount /dev/sda1 /mnt/tf_boot 2>/dev/null || true
+
+# 2. 移除 extlinux 目录，防止优先级冲突
+sudo rm -rf /mnt/tf_boot/extlinux
+
+# 3. 严格按照原厂脚本的内存地址 (0x11000000 / 0x13000000 / 0x01000000) 生成启动脚本
+cat << 'EOF' > /tmp/boot.cmd
+setenv kernel_loadaddr "0x11000000"
+setenv initrd_loadaddr "0x13000000"
+setenv dtb_mem_addr "0x01000000"
+
+setenv condev "console=ttyS0,115200n8 console=tty0 no_console_suspend consoleblank=0 earlyprintk=aml-uart,0xc81004c0"
+setenv bootargs "root=LABEL=ROOTFS rootflags=data=writeback rw ${condev} fsck.fix=yes fsck.repair=yes net.ifnames=0"
+
+# 从主线 U-Boot 的 TF 卡设备 (mmc 1:1) 加载 zImage、uInitrd 和 dtb.img
+fatload mmc 1:1 ${initrd_loadaddr} uInitrd
+fatload mmc 1:1 ${kernel_loadaddr} zImage
+fatload mmc 1:1 ${dtb_mem_addr} dtb.img
+
+fdt addr ${dtb_mem_addr}
+booti ${kernel_loadaddr} ${initrd_loadaddr} ${dtb_mem_addr}
+EOF
+
+# 4. 编译生成 boot.scr 并写入 TF 卡
+sudo mkimage -C none -A arm64 -T script -d /tmp/boot.cmd /mnt/tf_boot/boot.scr
+
+# 5. 检查并安全卸载
+ls -lh /mnt/tf_boot/boot.scr
+sync
+sudo umount /mnt/tf_boot
+请谨慎使用此类代码。
+
+上电后注意观察两点
+
+• 串口刷屏： 这一次 0x11000000 彻底避开了 BL31 安全内存冲突，Starting kernel ... 之后就会立刻喷出 Linux version 3.14.29 的启动日志！
+• 如果提示 Bad FDT magic（因为部分老式 dtb.img 带有 Amlogic 专属头）： 只需把上面脚本里的 dtb.img 改成 dtb/gxl_p212_1g.dtb 重新生成一次 boot.scr 即可（其他地址 0x11000000 和 0x13000000 保持不变）。
+刷入这个新的 boot.scr 上电后，请把 PuTTY 串口输出的日志发给我；如果遇到 dtb.img 格式提示，我立刻帮你微调那一行路径。
+AI 回答可能包含错误。 了解详情
+
+也就是说要靠boot.scr启动？
+
+是的，对于这种带有专用内存地址要求（0x11000000）的 3.14.29 老内核恢复盘，必须使用 boot.scr 来启动。
+
+核心原因
+
+• extlinux.conf 无法自定义加载地址： 主线 U-Boot 2024.01 在解析 extlinux.conf 时，会强制使用内置的固定地址（0x01080000）加载内核，直接踩穿 0x05000000–0x10200000 处的 BL31 安全固件区并导致死机。
+• boot.scr 拥有完全控制权： 只有通过 boot.scr 脚本，我们才能明确命令主线 U-Boot 把 zImage 精准加载到 0x11000000（安全内存区），从而完美避开 BL31 冲突并顺利拉起 3.14.29 内核。
+按照上一步的 mkimage 命令生成 boot.scr（并删掉 extlinux 文件夹）插卡上电后，请把 PuTTY 的新启动日志发给我确认效果。
+AI 回答可能包含错误。 了解详情
+
+好的 再多问一句 这些能用在armbian-s905x-trixie.img.gz上吗
+
+可以用在 armbian-s905x-trixie.img.gz 上，但必须用主线内核（6.x）的专用配置，千万不要直接照搬刚才 3.14.29 的 boot.scr（两者的内核文件名、设备树路径、串口终端名和内存地址完全不同）。
+
+核心差异对照表
+
+
+配置维度	刚才的 3.14.29 老内核恢复盘	armbian-s905x-trixie.img.gz（新版主线内核）
+系统与内核版本	旧版 Armbian 5.x（Amlogic 3.14.29 厂商内核）	最新 Debian 13 (Trixie) + Linux 6.6 / 6.12+ 主线内核
+引导方式（最佳选择）	必须用自定义地址 boot.scr	直接用 extlinux/extlinux.conf（删掉自带的旧 boot.scr）
+内核与内存盘文件名	/zImage 与 /uInitrd	/vmlinuz-6.x.x-... 与 /initrd.img-6.x.x-...
+设备树（DTB）路径	/dtb/gxl_p212_1g.dtb（3.14 专属格式）	/dtb/amlogic/meson-gxl-s905x-p212.dtb（主线格式）
+串口控制台参数	console=ttyS0,115200n8	console=ttyAML0,115200n8（主线驱动专用名）
+低内存保命参数	无需额外指定	必须加上 cma=32M（防止 512MB 有效内存下预留显存失败）
+
+
+如果你想刷 armbian-s905x-trixie.img.gz，直接用这套标准做法
+
+1. 写入镜像与我们的混合主线 U-Boot（lafrite 32-bit 1GB 版或 jethub-j80 792MHz 版）：bash
+# 1. 写入 Trixie 镜像到 TF 卡 (/dev/sda)
+zcat armbian-s905x-trixie.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
+
+# 2. 注入我们工作流编译的 u-boot.bin.sd.bin（跳过 MBR 分区表）
+sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=1 count=442
+sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=512 skip=1 seek=1
+
+# 3. 提前修复根分区校验和，避免首次启动 ext4lazyinit 报错
+sudo e2fsck -fy /dev/sda2 || true
+请谨慎使用此类代码。
+2. 替换引导为低内存版 extlinux.conf（消除 0x44000000 越界崩溃）：bash
+sudo mount /dev/sda1 /mnt/tf_boot
+# 备份移除 Trixie 镜像里自带的高地址 boot.scr
+sudo mv /mnt/tf_boot/boot.scr /mnt/tf_boot/boot.scr.bak 2>/dev/null || true
+
+# 自动获取 Trixie 的实际内核名、initrd 名和 sda2 UUID
+KERNEL_FILE=$(ls /mnt/tf_boot/ | grep -E '^vmlinuz' | head -n 1)
+INITRD_FILE=$(ls /mnt/tf_boot/ | grep -E '^initrd\.img' | head -n 1)
+ROOT_UUID=$(sudo blkid -s UUID -o value /dev/sda2)
+
+sudo mkdir -p /mnt/tf_boot/extlinux
+sudo bash -c "cat > /mnt/tf_boot/extlinux/extlinux.conf <<EOF
+LABEL Armbian_Trixie
+  LINUX /${KERNEL_FILE}
+  INITRD /${INITRD_FILE}
+  FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
+  APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
+EOF"
+
+sync && sudo umount /mnt/tf_boot
+请谨慎使用此类代码。
+(注：其实你之前修改的 GitHub Actions 工作流 creat_s905L.yaml 做的就是上面这整套自动化流程，只是把上游获取链接从 ophub 换成 armbian-s905x-trixie.img.gz 的下载地址即可。)
+你现在准备先测试手头这张 3.14.29 老内核恢复盘，还是直接用上面的步骤把 armbian-s905x-trixie.img.gz 刷进卡里启动？如果刷 Trixie 时遇到任何文件名或目录结构差异，随时贴出来我帮你核对。
+AI 回答可能包含错误。 了解详情
+
+直接用上面的步骤把 armbian-s905x-trixie.img.gz 刷进卡里启动
+
+太好了，直接刷 armbian-s905x-trixie.img.gz（Debian 13 Trixie 主线内核）是最干净、最现代的方案。
+执行过程中只需注意一个关键细节：不同构建者发布的 armbian-s905x-trixie.img.gz 分区结构可能略有差异（有的是 BOOT + ROOTFS 双分区；有的是纯单分区直接把 /boot 放在根分区里）。
+下面这套自适应一键脚本会自动兼容单分区和双分区两种结构，在 Debian 终端里直接复制执行即可（请确保 armbian-s905x-trixie.img.gz 和 u-boot.bin.sd.bin 都在当前目录下，且 TF 卡设备为 /dev/sda）：
+
+Debian 终端一键刷入并配置 Trixie
+
+bash
+# 1. 卸载可能已挂载的 TF 卡分区
+sudo umount /dev/sda* 2>/dev/null || true
+
+# 2. 将 Trixie 镜像写入 TF 卡 (/dev/sda)
+zcat armbian-s905x-trixie.img.gz | sudo dd of=/dev/sda bs=4M status=progress conv=fsync
+sync
+
+# 3. 写入我们的混合主线 U-Boot（保留 MBR 分区表）
+sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=1 count=442
+sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=512 skip=1 seek=1
+sync
+
+# 4. 刷新分区表并修复文件系统校验和
+sudo partprobe /dev/sda
+sleep 2
+if [ -b /dev/sda2 ]; then
+  sudo e2fsck -fy /dev/sda2 || true
+  BOOT_PART="/dev/sda1"
+  ROOT_PART="/dev/sda2"
+  PREFIX=""
+else
+  sudo e2fsck -fy /dev/sda1 || true
+  BOOT_PART="/dev/sda1"
+  ROOT_PART="/dev/sda1"
+  PREFIX="/boot"
+fi
+
+# 5. 挂载引导分区，移除冲突的高地址 boot.scr 并写入低内存 extlinux.conf
+sudo mkdir -p /mnt/tf_boot
+sudo mount "$BOOT_PART" /mnt/tf_boot
+
+sudo mv "/mnt/tf_boot${PREFIX}/boot.scr" "/mnt/tf_boot${PREFIX}/boot.scr.bak" 2>/dev/null || true
+sudo mv "/mnt/tf_boot${PREFIX}/boot.cmd" "/mnt/tf_boot${PREFIX}/boot.cmd.bak" 2>/dev/null || true
+
+KERNEL_FILE=$(ls "/mnt/tf_boot${PREFIX}/" | grep -E '^vmlinuz' | head -n 1)
+INITRD_FILE=$(ls "/mnt/tf_boot${PREFIX}/" | grep -E '^initrd\.img' | head -n 1)
+DTB_PATH=$(cd "/mnt/tf_boot${PREFIX}" && find . -name "meson-gxl-s905x-p212.dtb" | sed 's|^\./||' | head -n 1)
+ROOT_UUID=$(sudo blkid -s UUID -o value "$ROOT_PART")
+
+echo "自动匹配结果 -> 内核: ${PREFIX}/${KERNEL_FILE} | 内存盘: ${PREFIX}/${INITRD_FILE} | DTB: ${PREFIX}/${DTB_PATH} | UUID: ${ROOT_UUID}"
+
+sudo mkdir -p "/mnt/tf_boot${PREFIX}/extlinux"
+sudo bash -c "cat > /mnt/tf_boot${PREFIX}/extlinux/extlinux.conf <<EOF
+LABEL Armbian_Trixie
+  LINUX ${PREFIX}/${KERNEL_FILE}
+  INITRD ${PREFIX}/${INITRD_FILE}
+  FDT ${PREFIX}/${DTB_PATH}
+  APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
+EOF"
+
+# 6. 检查配置内容并安全卸载
+cat "/mnt/tf_boot${PREFIX}/extlinux/extlinux.conf"
+sync
+sudo umount /mnt/tf_boot
+请谨慎使用此类代码。
+
+刷写前核对两点
+
+• u-boot.bin.sd.bin 来源： 如果你已经跑通了刚才改成 lafrite 的工作流，强烈建议用新生成的 lafrite 版 u-boot.bin.sd.bin（32-bit 1GB 完整内存），这样 Trixie 系统开机直接拥有完整 1GB 内存，彻底杜绝死机；如果暂时只用之前 jethub-j80 版的 u-boot.bin.sd.bin 也完全没问题，脚本里的 cma=32M 会保护 512MB 内存不溢出。
+• 查看第 5 步打印的匹配结果： 确认 内核、内存盘 和 DTB 都不为空，即可拔卡插上盒子通电。

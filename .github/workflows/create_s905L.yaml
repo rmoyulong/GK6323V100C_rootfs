@@ -57,7 +57,9 @@ jobs:
           chmod +x build-fip.sh
           ./build-fip.sh lafrite ../u-boot/u-boot.bin ../fip_output
           cd ..
-          ls -lh fip_output/LaFrite_u-boot.bin.sd.bin
+          
+          sudo mv fip_output/u-boot.bin.sd.bin fip_output/LaFrite_u-boot.bin.sd.bin
+          ls -lh fip_output/LaFrite_u-boot.sd.bin
           
       - name: 下载 Armbian S905X 基础镜像
         run: |
@@ -175,7 +177,6 @@ jobs:
             ```
           files: |
             Armbian_*_s905_p212.img.gz
-            fip_output/u-boot.bin.sd.bin
             fip_output/LaFrite_u-boot.bin.sd.bin
           prerelease: false
         env:
