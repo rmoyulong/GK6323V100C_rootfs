@@ -181,10 +181,10 @@ jobs:
             sudo tee /etc/apt/sources.list > /dev/null <<'EOF'
             deb http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
             deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye main contrib non-free
-
+            
             deb http://mirrors.aliyun.com/debian-archive/debian-security bullseye-security main contrib non-free
             deb-src http://mirrors.aliyun.com/debian-archive/debian-security bullseye-security main contrib non-free
-
+            
             deb http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main contrib non-free
             deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main contrib non-free
             EOF
