@@ -165,7 +165,7 @@ jobs:
           
           
           #调用base64_heredoc.sh里的函数base64_heredoc
-          sudo source ${{ github.workspace }}/patch/base64_heredoc.sh   # chroot 外调用
+          source ${{ github.workspace }}/patch/base64_heredoc.sh   # chroot 外调用
           base64_heredoc list_src_fstab | base64 -d | sudo tee /mnt/armbian_root/tmp/patch/fstab > /dev/null
           cat /mnt/armbian_root/tmp/patch/fstab
 
