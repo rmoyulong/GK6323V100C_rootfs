@@ -240,6 +240,7 @@ jobs:
             #调用base64_heredoc.sh里的函数base64_heredoc
             source /tmp/patch/base64_heredoc.sh   # 注意：chroot 内的绝对路径
             
+            apt update && apt upgrade  -y
             apt-get install -y locales
 
             locale-gen zh_CN.UTF-8
