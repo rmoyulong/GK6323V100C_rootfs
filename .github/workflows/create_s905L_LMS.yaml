@@ -74,7 +74,7 @@ jobs:
             | jq -r '.[] 
               | select(.tag_name | test("bullseye_save_2025.01"; "i"))   
               | .assets[] 
-              | select(.name | test("Armbian_.*_amlogic_s905x_bullseye_6.1.126_.*\\.img\\.gz$")) 
+              | select(.name | test("Armbian_.*_amlogic_s905_bullseye_6.1.126_.*\\.img\\.gz$")) 
               | .browser_download_url' \
             | head -n 1)
 
@@ -187,9 +187,8 @@ jobs:
             base64_heredoc list_src_apt | base64 -d | tee /etc/apt/sources.list > /dev/null
             
             apt-get update
-            apt-get install -y --no-install-recommends dos2unix net-tools cifs-utils ethtool screen wget curl sudo file mtools usbutils
-            apt-get install -y --no-install-recommends alsa-utils alsa-tools ffmpeg locales  #squeezelite
-
+            apt-get install -y --no-install-recommends wget dos2unix net-tools davfs2 cifs-utils ethtool screen alsa-utils alsa-tools sudo file mtools  locales ffmpeg
+            
             #################### 必要的设置开始 ######################
             mkdir -p /mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
 
