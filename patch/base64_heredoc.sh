@@ -99,7 +99,7 @@ read -r -d '' list_src_LMS_network <<'EOF' || true
 EOF
 
 #设置zram的大小600M /etc/sysctl.d/97-zram-opt.conf
-read -r -d '' list_src_zram-opt <<'EOF' || true
+read -r -d '' list_src_zram_opt <<'EOF' || true
             vm.swappiness=150
             vm.watermark_boost_factor=0
             vm.watermark_scale_factor=125
@@ -107,7 +107,7 @@ read -r -d '' list_src_zram-opt <<'EOF' || true
 EOF
 
 #建立启动后仅运行一次的脚本 /etc/systemd/system/resize-once.service
-read -r -d '' list_src_resize-once <<'EOF' || true
+read -r -d '' list_src_resize_once <<'EOF' || true
             [Unit]
             Description=One-time resize script
             After=local-fs.target			

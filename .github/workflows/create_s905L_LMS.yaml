@@ -210,7 +210,7 @@ jobs:
             base64_heredoc list_src_zarm | base64 -d | tee /etc/default/armbian-zram-config > /dev/null
 
             #设置zram的大小600M
-            base64_heredoc list_src_zram-opt | base64 -d | tee /etc/sysctl.d/97-zram-opt.conf > /dev/null
+            base64_heredoc list_src_zram_opt | base64 -d | tee /etc/sysctl.d/97-zram-opt.conf > /dev/null
             
             mkdir -p /etc/sysctl.d
             base64_heredoc list_src_LMS_network | base64 -d | tee /etc/sysctl.d/99-lms-network.conf > /dev/null
@@ -223,7 +223,7 @@ jobs:
 
             #################建立启动后运行一次的脚本-开始################################################
             mkdir -p /etc/systemd/system
-            base64_heredoc list_src_resize-once | base64 -d | tee /etc/systemd/system/resize-once.service > /dev/null
+            base64_heredoc list_src_resize_once | base64 -d | tee /etc/systemd/system/resize-once.service > /dev/null
             
             #对rootfs扩容
             base64_heredoc list_src_resize_sh noecho | base64 -d | tee /etc/resize.sh > /dev/null
