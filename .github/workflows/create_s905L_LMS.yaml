@@ -134,8 +134,7 @@ jobs:
           sleep 1
           
           S_ROOTFS_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
-          echo "ROOTFS_UUID=$S_ROOTFS_UUID" >> $GITHUB_ENV
-
+          
           if [ ! -b "${LOOP_DEV}p2" ]; then
             echo "未找到 ${LOOP_DEV}p2，分区扫描失败" >&2
             sudo losetup -d "$LOOP_DEV"
@@ -171,7 +170,7 @@ jobs:
           sudo mkdir -p /mnt/armbian_root/tmp/patch
           sudo cp -a "${{ github.workspace }}/patch/." /mnt/armbian_root/tmp/patch/          
           
-          echo "UUID=${{ env.GITHUB_UUID }}   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro    0 1" > /mnt/armbian_root/tmp/patch/fstab
+          echo 'UUID=S_ROOTFS_UUID   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro    0 1' > /mnt/armbian_root/tmp/patch/fstab
           echo "LABEL=BOOT   /boot    vfat     defaults                                                    0 2" >> /mnt/armbian_root/tmp/patch/fstab
           echo "tmpfs        /tmp     tmpfs    defaults,nosuid                                             0 0" >> /mnt/armbian_root/tmp/patch/fstab
           echo "192.168.31.60:/mnt/music/music  /mnt/NAS  nfs nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0 0" >> /mnt/armbian_root/tmp/patch/fstab
