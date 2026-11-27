@@ -99,8 +99,7 @@ read -r -d '' list_src_LMS_network <<'EOF' || true
 EOF
 
 #设置zram的大小600M /etc/sysctl.d/97-zram-opt.conf
-list_src_zram-opt='
-read -r -d '' list_src_zarm <<'EOF' || true
+read -r -d '' list_src_zram-opt <<'EOF' || true
             vm.swappiness=150
             vm.watermark_boost_factor=0
             vm.watermark_scale_factor=125
