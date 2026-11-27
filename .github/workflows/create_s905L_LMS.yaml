@@ -254,6 +254,11 @@ jobs:
             dpkg -i ./golang/lms_arm.deb || true
             apt-get --fix-broken install -y
             
+            #设置/etc/fstab
+            base64_heredoc list_src_fstab | base64 -d | tee /etc/fstab > /dev/null
+            #echo '----- /etc/fstab -----'
+            cat /etc/fstab
+            
             #设置squeezelite的配置 
             #base64_heredoc list_src_squeezelite | base64 -d | tee /etc/default/squeezelite > /dev/null
             #echo '----- /etc/default/squeezelite -----'

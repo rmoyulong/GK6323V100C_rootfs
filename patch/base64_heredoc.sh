@@ -162,6 +162,16 @@ ExecStart=/usr/local/bin/squeezelite -o hw:1,0 -D dop -p 85 -b 2048:4096 -n Sque
 WantedBy=multi-user.target
 EOF
 
+# ---------- 写 /etc/fstab（NFS v3 挂载 NAS 音乐目录）
+ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+read -r -d '' list_src_fstab <<'EOF' || true
+# <file system>          <mount point>  <type>  <options>                             <dump> <pass>
+$ROOT_PART   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro         0 1
+LABEL=BOOT   /boot    vfat     defaults                                                    0 2
+tmpfs        /tmp     tmpfs    defaults,nosuid                                             0 0
+192.168.31.60:/mnt/music/music  /mnt/NAS  nfs nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0 0
+EOF
+
 #设置armbian启动config /mnt/armbian_boot/extlinux/extlinux.conf new
 read -r -d '' list_src_extlinux <<'EOF' || true
 LABEL Armbian
