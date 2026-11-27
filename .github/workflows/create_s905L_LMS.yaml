@@ -70,11 +70,11 @@ jobs:
           mkdir -p work_img
           cd work_img
 
-          IMG_URL=$(curl -sL "https://api.github.com/repos/rmoyulong/amlogic-s9xxx-armbian/releases?per_page=50" \
+          IMG_URL=$(curl -sL "https://api.github.com/repos/rmoyulong/packages_lang_golang/releases?per_page=10" \
             | jq -r '.[] 
               | select(.tag_name | test("backup_mini_bullseye"; "i"))   
               | .assets[] 
-              | select(.name | test("Armbian_.*amlogic_s905lb-r3300l_bullseye_6.1.81_.*\\.img\\.gz$")) 
+              | select(.name | test("Armbian_.*_amlogic_*._bullseye_6.1.81_.*\\.img\\.gz$"))
               | .browser_download_url' \
             | head -n 1)
 
