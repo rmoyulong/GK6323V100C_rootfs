@@ -130,10 +130,11 @@ jobs:
           #############################################
           echo "正在关联循环设备并检查修复分区..."
           LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212_LMS.img)
-          ROOTFS_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
-          echo "ROOTFS_UUID=$ROOTFS_UUID" >> $GITHUB_ENV
           sudo partprobe "$LOOP_DEV" 2>/dev/null || true
           sleep 1
+          
+          S_ROOTFS_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+          echo "ROOTFS_UUID=$S_ROOTFS_UUID" >> $GITHUB_ENV
 
           if [ ! -b "${LOOP_DEV}p2" ]; then
             echo "未找到 ${LOOP_DEV}p2，分区扫描失败" >&2
