@@ -147,6 +147,21 @@ read -r -d '' list_src_squeezelite <<'EOF' || true
             SB_EXTRA_ARGS="-D dop -p 85 -b 2048:4096"
 EOF
 
+#设置squeezelite服务文件 /usr/lib/systemd/system/squeezelite.service 
+read -r -d '' list_src_squeezelite_service <<'EOF' || true
+[Unit]
+Description=Squeezelite LMS player
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/squeezelite -o hw:1,0 -D dop -p 85 -b 2048:4096 -n Squeezelite
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 #设置armbian启动config /mnt/armbian_boot/extlinux/extlinux.conf
 read -r -d '' list_src_extlinux <<'EOF' || true
 LABEL Armbian

@@ -259,6 +259,13 @@ jobs:
             echo '----- /etc/default/squeezelite -----'
             cat /etc/default/squeezelite
 
+            #设置squeezelite的服务文件
+            #mkdir -p /usr/lib/systemd/system
+            #base64_heredoc list_src_squeezelite_service | base64 -d | tee /usr/lib/systemd/system/squeezelite.service > /dev/null
+            #用自编高版本squeezelite替换/usr/bin/squeezelite
+            cp /tmp/patch/usr-local-bin/squeezelite /usr/bin/squeezelite
+            chmod -Rf 755 /usr/bin/squeezelite
+            
             mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
             mkdir -p /var/lib/squeezeboxserver/prefs/plugin
             tar zxvfp ./golang/plugins.tar.gz -C /
