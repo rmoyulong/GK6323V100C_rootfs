@@ -164,8 +164,7 @@ EOF
 
 # ---------- 写 /etc/fstab（NFS v3 挂载 NAS 音乐目录）
 read -r -d '' list_src_fstab <<'EOF' || true
-# <file system>          <mount point>  <type>  <options>                             <dump> <pass>
-UUID=$ROOT_PART   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro         0 1
+UUID=$ROOT_PART   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro    0 1
 LABEL=BOOT   /boot    vfat     defaults                                                    0 2
 tmpfs        /tmp     tmpfs    defaults,nosuid                                             0 0
 192.168.31.60:/mnt/music/music  /mnt/NAS  nfs nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0 0
