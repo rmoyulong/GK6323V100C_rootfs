@@ -74,7 +74,7 @@ jobs:
             | jq -r '.[] 
               | select(.tag_name | test("backup_mini_bullseye"; "i"))   
               | .assets[] 
-              | select(.name | test("Armbian_.*_amlogic_*._bullseye_6.1.81_.*\\.img\\.gz$"))
+              | select(.name | test("Armbian_.*_amlogic_.*_bullseye_6.1.81_.*\\.img\\.gz$"))
               | .browser_download_url' \
             | head -n 1)
 
