@@ -264,7 +264,7 @@ jobs:
             #上传自编高版本squeezelite
             mkdir -p /usr/local/bin
             cp /tmp/patch/usr-local-bin/squeezelite /usr/local/bin/squeezelite
-            chmod -Rf 755 /usr/bin/squeezelite
+            chmod -Rf 755 /usr/local/bin/squeezelite
             
             mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
             mkdir -p /var/lib/squeezeboxserver/prefs/plugin
