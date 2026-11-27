@@ -166,7 +166,7 @@ EOF
 ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
 read -r -d '' list_src_fstab <<'EOF' || true
 # <file system>          <mount point>  <type>  <options>                             <dump> <pass>
-$ROOT_PART   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro         0 1
+UUID=$ROOT_PART   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro         0 1
 LABEL=BOOT   /boot    vfat     defaults                                                    0 2
 tmpfs        /tmp     tmpfs    defaults,nosuid                                             0 0
 192.168.31.60:/mnt/music/music  /mnt/NAS  nfs nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0 0
