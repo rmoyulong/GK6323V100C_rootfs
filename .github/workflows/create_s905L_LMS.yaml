@@ -12,7 +12,7 @@ permissions:
 
 env:
   GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-  GITHUB_UUID: "EEEEEEEE"
+  ROOTFS_UUID: "EEEEEEEE"
   TZ: Asia/Shanghai
   #USE_CACHEWRTBUILD: true
 
@@ -130,6 +130,8 @@ jobs:
           #############################################
           echo "正在关联循环设备并检查修复分区..."
           LOOP_DEV=$(sudo losetup --find --show --partscan armbian_s905_p212_LMS.img)
+          ROOTFS_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+          echo "ROOTFS_UUID=$ROOTFS_UUID" >> $GITHUB_ENV
           sudo partprobe "$LOOP_DEV" 2>/dev/null || true
           sleep 1
 
@@ -163,8 +165,6 @@ jobs:
           # ================= 挂载 ROOT 分区并安装软件 =================
           echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite..."
           sudo mkdir -p /mnt/armbian_root
-          ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
-          echo "GITHUB_UUID=$ROOT_UUID" >> $GITHUB_ENV
           
           sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
           sudo mkdir -p /mnt/armbian_root/tmp/patch
