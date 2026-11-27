@@ -167,7 +167,7 @@ read -r -d '' list_src_extlinux <<'EOF' || true
 LABEL Armbian
   LINUX /${KERNEL_FILE}
   INITRD /${INITRD_FILE}
-  FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
+  fdt /dtb/amlogic/meson-gxl-s905x-p212.dtb
   APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
 EOF
 
