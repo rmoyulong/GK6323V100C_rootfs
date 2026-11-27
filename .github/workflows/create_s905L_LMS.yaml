@@ -179,99 +179,54 @@ jobs:
           sudo chroot /mnt/armbian_root /bin/bash -c "
             export DEBIAN_FRONTEND=noninteractive 
             
-              # 阿里云 Debian 11 (bullseye) 存档源
-              sudo mkdir -p /etc/apt
-                echo 'ZGViIGh0dHA6Ly9taXJyb3JzLmFsaXl1bi5jb20vZGViaWFuIGJ1bGxzZXllIG1haW4gY29udHJpYiBub24tZnJlZQpkZWIgaHR0cDovL21pcnJvcnMuYWxpeXVuLmNvbS9kZWJpYW4tc2VjdXJpdHkgYnVsbHNleWUtc2VjdXJpdHkgbWFpbiBjb250cmliIG5vbi1mcmVlCmRlYiBodHRwOi8vbWlycm9ycy5hbGl5dW4uY29tL2RlYmlhbiBidWxsc3llLXVwZGF0ZXMgbWFpbiBjb250cmliIG5vbi1mcmVlCg==' \
-                  | base64 -d \
-                  | sudo tee /etc/apt/sources.list > /dev/null
+            #chroot里面不用使用sudo 因为已经 sudo chroot 
+            #调用base64_heredoc.sh里的函数base64_heredoc
+            source /tmp/patch/base64_heredoc.sh   # 注意：chroot 内的绝对路径
+            # 阿里云 Debian 11 (bullseye) 存档源
+            mkdir -p /etc/apt
+            base64_heredoc list_src_apt | base64 -d | tee /etc/apt/sources.list > /dev/null
             
             apt-get update
             apt-get install -y --no-install-recommends dos2unix net-tools cifs-utils ethtool screen wget curl sudo file mtools usbutils
             apt-get install -y --no-install-recommends squeezelite alsa-utils alsa-tools ffmpeg locales
 
             #################### 必要的设置开始 ######################
-            sudo mkdir -p /mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
+            mkdir -p /mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
 
-            sudo mkdir -p /etc/update-motd.d
-            sudo cp /tmp/patch/cats_banner /etc/cats_banner
-            sudo tee /etc/update-motd.d/40-cats-banner > /dev/null <<EOF
-            #!/bin/bash
-            set -o pipefail
-            cat /etc/cats_banner
-            EOF
+            mkdir -p /etc/update-motd.d
+            cp /tmp/patch/cats_banner /etc/cats_banner
+            base64_heredoc list_src_banner | base64 -d | tee /etc/update-motd.d/95-cats-banner > /dev/null
+            chmod +x /etc/update-motd.d/95-cats-banner
             
-            sudo chmod +x /etc/update-motd.d/40-cats_banner
-            sudo rm -rf /etc/localtime
-            sudo ln -s /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-            sudo mkdir -p /etc/default
-            sudo cp /tmp/patch/locale.conf /etc/default/locale.conf
-            sudo cp /tmp/patch/locale.gen /etc/locale.gen
-            sudo cp /tmp/patch/locale.conf /etc/locale.conf
-            sudo tee /etc/default/armbian-zram-config > /dev/null <<EOF
-            ENABLED=true
-            ZRAM_PERCENTAGE=120
-            MEM_LIMIT_PERCENTAGE=100
-            ZRAM_MAX_DEVICES=4
-            SWAP_ALGORITHM=zstd
-            EOF
+            rm -rf /etc/localtime
+            ln -s /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+            
+            mkdir -p /etc/default
+            cp /tmp/patch/locale.conf /etc/default/locale
+            cp /tmp/patch/locale.gen /etc/locale.gen
+            cp /tmp/patch/locale.conf /etc/locale.conf
+            
+            #把zarm改成zstd压缩方式
+            base64_heredoc list_src_zarm | base64 -d | tee /etc/default/armbian-zram-config > /dev/null
 
-            sudo mkdir -p /etc/sysctl.d
-            sudo tee /etc/sysctl.d/99-lms-network.conf > /dev/null <<EOF
-            # LMS 高解析度音乐异步推流网络优化
-            net.core.somaxconn = 1024
-            net.core.netdev_max_backlog = 5000
-            net.core.rmem_max = 16777216
-            net.core.wmem_max = 16777216
-            net.ipv4.tcp_rmem = 4096 87380 16777216
-            net.ipv4.tcp_wmem = 4096 65536 16777216
-            EOF
+            #设置zram的大小600M
+            base64_heredoc ist_src_zram-opt | base64 -d | tee /etc/sysctl.d/97-zram-opt.conf > /dev/null
+            
+            mkdir -p /etc/sysctl.d
+            base64_heredoc list_src_LMS_network | base64 -d | tee /etc/sysctl.d/99-lms-network.conf > /dev/null
             echo '----- 99-lms-network.conf -----'
-            cat /etc/sysctl.d/99-lms-network.conf
+            cat /etc/sysctl.d/99-lms-network.conf 
 
-            sudo mkdir -p /etc/sysctl.d
-            sudo tee /etc/sysctl.d/97-zram-opt.conf > /dev/null <<EOF
-            vm.swappiness=150
-            vm.watermark_boost_factor=0
-            vm.watermark_scale_factor=125
-            vm.page-cluster=0
-            EOF
-
-            sudo cp /tmp/patch/.bashrc /root/.bashrc
-            sudo chmod 0644 /root/.bashrc
+            cp /tmp/patch/.bashrc /root/.bashrc
+            chmod 0644 /root/.bashrc
             #################### 必要的设置结束 ######################
 
             #################建立启动后运行一次的脚本-开始################################################
-            sudo mkdir -p /etc/systemd/system
-            sudo tee /etc/systemd/system/resize-once.service > /dev/null <<EOF
-            [Unit]
-            Description=One-time resize script
-            After=local-fs.target
-            ConditionPathExists=/etc/resize.sh
-            [Service]
-            Type=oneshot
-            ExecStart=/etc/resize.sh
-            RemainAfterExit=no
-            [Install]
-            WantedBy=multi-user.target
-            EOF
+            mkdir -p /etc/systemd/system
+            base64_heredoc list_src_resize-once | base64 -d | tee /etc/systemd/system/resize-once.service > /dev/null
             
             #对rootfs扩容
-            sudo tee /etc/resize.sh > /dev/null <<'EOF'
-            #!/bin/bash
-            set -uo pipefail
-            [ -e /etc/sudo.conf ] && chown root:root /etc/sudo.conf
-            [ -e /etc/sudoers ]   && chown root:root /etc/sudoers
-            [ -d /etc/sudoers.d ] && chown -R root:root /etc/sudoers.d
-            [ -e /usr/bin/sudo ]  && chown root:root /usr/bin/sudo
-            [ -e /usr/bin/sudo ]  && chmod 4755 /usr/bin/sudo
-            ROOT_PART=$(findmnt -n -o SOURCE /)
-            resize2fs "$ROOT_PART"
-            systemctl restart lyrionmusicserver 2>/dev/null
-            systemctl disable resize-once.service 2>/dev/null
-            rm -f /etc/systemd/system/resize-once.service
-            rm -f /etc/resize.sh
-            systemctl daemon-reload
-            EOF
+            base64_heredoc list_src_resize_sh noecho | base64 -d | tee /etc/resize.sh > /dev/null
             chmod +x /etc/resize.sh
             #################建立启动后运行一次的脚本-结束################################################
 
@@ -281,6 +236,11 @@ jobs:
           # 第二轮 chroot：安装 LMS，并在安装完成后再覆盖配置
           sudo chroot /mnt/armbian_root /bin/bash -c "
             export DEBIAN_FRONTEND=noninteractive
+
+            #chroot里面不用使用sudo 因为已经 sudo chroot 
+            #调用base64_heredoc.sh里的函数base64_heredoc
+            source /tmp/patch/base64_heredoc.sh   # 注意：chroot 内的绝对路径
+            
             apt-get install -y locales
 
             locale-gen zh_CN.UTF-8
@@ -293,18 +253,15 @@ jobs:
 
             dpkg -i ./golang/lms_arm.deb || true
             apt-get --fix-broken install -y
-            sudo tee /etc/default/squeezelite > /dev/null <<EOF
-            SL_NAME="Squeezelite"
-            SL_SOUNDCARD="hw:1,0"
-            SB_EXTRA_ARGS="-D dop -p 85 -b 2048:4096"
-            EOF
-
+            
+            #设置squeezelite的配置 
+            base64_heredoc list_src_squeezelite | base64 -d | tee /etc/default/squeezelite > /dev/null
             echo '----- /etc/default/squeezelite -----'
-            sudo cat /etc/default/squeezelite
+            cat /etc/default/squeezelite
 
-            sudo mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
-            sudo mkdir -p /var/lib/squeezeboxserver/prefs/plugin
-            sudo tar zxvfp ./golang/plugins.tar.gz -C /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
+            mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
+            mkdir -p /var/lib/squeezeboxserver/prefs/plugin
+            tar zxvfp ./golang/plugins.tar.gz -C /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
             rm -rf ./golang
 
             systemctl enable lyrionmusicserver || true
@@ -373,17 +330,15 @@ jobs:
           KERNEL_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uImage|zImage|vmlinuz)' | head -n 1)
           INITRD_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uInitrd|initrd)' | head -n 1)
           ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+          
+          #调用base64_heredoc.sh里的函数base64_heredoc
+          source ${{ github.workspace }}/patch/base64_heredoc.sh   # chroot 外调用
 
           echo "检测到内核文件: $KERNEL_FILE, 内存盘文件: $INITRD_FILE, 根分区 UUID: $ROOT_UUID"
 
           sudo mkdir -p /mnt/armbian_boot/extlinux
-          sudo tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null <<EOF
-              LABEL Armbian
-                LINUX /${KERNEL_FILE}
-                INITRD /${INITRD_FILE}
-                FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
-                APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
-          EOF
+          #设置extlinuxl.confg 
+          base64_heredoc list_src_extlinux | base64 -d | tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null
 
           echo "生成的 extlinux.conf 内容如下："
           cat /mnt/armbian_boot/extlinux/extlinux.conf

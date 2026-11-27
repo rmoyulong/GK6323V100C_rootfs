@@ -120,15 +120,14 @@ jobs:
           sudo mount -o bind /dev/pts /mnt/armbian_root/dev/pts
 
           # 第一轮 chroot：基础包 + 系统配置
-            sudo chroot /mnt/armbian_root /bin/bash -c "
-              export DEBIAN_FRONTEND=noninteractive
+          sudo chroot /mnt/armbian_root /bin/bash -c "
+            export DEBIAN_FRONTEND=noninteractive
 
-              # 阿里云 Debian 11 (bullseye) 存档源
-              sudo mkdir -p /etc/apt
-                echo 'ZGViIGh0dHA6Ly9taXJyb3JzLmFsaXl1bi5jb20vZGViaWFuIGJ1bGxzZXllIG1haW4gY29udHJpYiBub24tZnJlZQpkZWIgaHR0cDovL21pcnJvcnMuYWxpeXVuLmNvbS9kZWJpYW4tc2VjdXJpdHkgYnVsbHNleWUtc2VjdXJpdHkgbWFpbiBjb250cmliIG5vbi1mcmVlCmRlYiBodHRwOi8vbWlycm9ycy5hbGl5dW4uY29tL2RlYmlhbiBidWxsc3llLXVwZGF0ZXMgbWFpbiBjb250cmliIG5vbi1mcmVlCg==' \
-                  | base64 -d \
-                  | sudo tee /etc/apt/sources.list > /dev/null
-            "
+            source /tmp/patch/base64_heredoc.sh   # 注意：chroot 内的绝对路径
+            # 阿里云 Debian 11 (bullseye) 存档源
+            mkdir -p /etc/apt
+            base64_heredoc list_src_apt | base64 -d | tee /etc/apt/sources.list > /dev/null
+          "
 
           # =====================================================================
           # 收尾
@@ -192,17 +191,15 @@ jobs:
           KERNEL_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uImage|zImage|vmlinuz)' | head -n 1)
           INITRD_FILE=$(ls /mnt/armbian_boot/ | grep -E '^(uInitrd|initrd)' | head -n 1)
           ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+          
+          #调用base64_heredoc.sh里的函数base64_heredoc
+          source ${{ github.workspace }}/patch/base64_heredoc.sh   # chroot 外调用
 
           echo "检测到内核文件: $KERNEL_FILE, 内存盘文件: $INITRD_FILE, 根分区 UUID: $ROOT_UUID"
 
           sudo mkdir -p /mnt/armbian_boot/extlinux
-          sudo tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null <<EOF
-              LABEL Armbian
-                LINUX /${KERNEL_FILE}
-                INITRD /${INITRD_FILE}
-                FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
-                APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
-          EOF
+          #设置extlinuxl.confg 
+          base64_heredoc list_src_extlinux | base64 -d | tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null
 
           echo "生成的 extlinux.conf 内容如下："
           cat /mnt/armbian_boot/extlinux/extlinux.conf
