@@ -161,12 +161,12 @@ jobs:
           sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
 
           sudo mkdir -p /mnt/armbian_root/tmp/patch
-          sudo cp -a "${{ github.workspace }}/patch/." /mnt/armbian_root/tmp/patch/
+          sudo cp -a "${{ github.workspace }}/patch/." /mnt/armbian_root/tmp/patch/          
           
-          
-          #调用base64_heredoc.sh里的函数base64_heredoc
-          source ${{ github.workspace }}/patch/base64_heredoc.sh   # chroot 外调用
-          base64_heredoc list_src_fstab | base64 -d | sudo tee /mnt/armbian_root/tmp/patch/fstab > /dev/null
+          echo "UUID=$ROOT_PART   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro    0 1" > /mnt/armbian_root/tmp/patch/fstab
+          echo "LABEL=BOOT   /boot    vfat     defaults                                                    0 2" >> /mnt/armbian_root/tmp/patch/fstab
+          echo "tmpfs        /tmp     tmpfs    defaults,nosuid                                             0 0" >> /mnt/armbian_root/tmp/patch/fstab
+          echo "192.168.31.60:/mnt/music/music  /mnt/NAS  nfs nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0 0" >> /mnt/armbian_root/tmp/patch/fstab
           cat /mnt/armbian_root/tmp/patch/fstab
 
           if [ -L /mnt/armbian_root/etc/resolv.conf ]; then
