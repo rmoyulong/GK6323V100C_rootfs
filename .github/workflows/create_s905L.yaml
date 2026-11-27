@@ -46,9 +46,11 @@ jobs:
           mkdir -p fip_output
           cd amlogic-boot-fip
           chmod +x build-fip.sh
+          ./build-fip.sh lepotato ../u-boot/u-boot.bin ../fip_output
+          mv fip_output/u-boot.bin.sd.bin fip_output/1g-u-boot.bin.sd.bin
           ./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
           cd ..
-          ls -lh fip_output/u-boot.bin.sd.bin
+          ls -lh fip_output/*.bin
           
       #如果 lafrite 无法过内存测试（例如频率过高），我们只需把第 2 处的 lafrite 换成 lepotato 即可    
       #- name: 使用 LaFrite (32-bit 1GB 低频稳压) BL2 签名封装 FIP 引导
@@ -231,6 +233,9 @@ jobs:
             
             适用于内置 eMMC/NAND 损坏的 Amlogic GXBB 系列盒子，直接从外置 TF 卡冷启动主线 Armbian。
             根据北京联通Q5救砖盘思路会强制使用内置的固定地址（0x01080000）加载内核
+            
+            u-boot.bin.sd.bin 适用于只有500m内存的北京视讯Q5
+            1g-u-boot.bin.sd.bin 适用于1g内存的北京视讯Q5
 
             ### TF 卡刷写说明 (Debian/Linux)
             ```bash
@@ -246,7 +251,7 @@ jobs:
             ```
           files: |
             *.img.gz
-            fip_output/u-boot.bin.sd.bin
+            fip_output/*.bin
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
