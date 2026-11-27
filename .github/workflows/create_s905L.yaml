@@ -47,7 +47,7 @@ jobs:
           cd amlogic-boot-fip
           chmod +x build-fip.sh
           ./build-fip.sh lepotato ../u-boot/u-boot.bin ../fip_output
-          mv fip_output/u-boot.bin.sd.bin fip_output/1g-u-boot.bin.sd.bin
+          mv ../fip_output/u-boot.bin.sd.bin fip_output/1g-u-boot.bin.sd.bin
           ./build-fip.sh jethub-j80 ../u-boot/u-boot.bin ../fip_output
           cd ..
           ls -lh fip_output/*.bin
