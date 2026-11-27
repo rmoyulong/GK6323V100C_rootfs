@@ -161,6 +161,11 @@ jobs:
 
           sudo mkdir -p /mnt/armbian_root/tmp/patch
           sudo cp -a "${{ github.workspace }}/patch/." /mnt/armbian_root/tmp/patch/
+          
+          ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+          #调用base64_heredoc.sh里的函数base64_heredoc
+          source ${{ github.workspace }}/patch/base64_heredoc.sh   # chroot 外调用
+          base64_heredoc list_src_fstab | base64 -d | sudo tee /mnt/armbian_root/tmp/patch/fstab > /dev/null
 
           if [ -L /mnt/armbian_root/etc/resolv.conf ]; then
             sudo mv /mnt/armbian_root/etc/resolv.conf /mnt/armbian_root/etc/resolv.conf.bak
@@ -255,7 +260,7 @@ jobs:
             apt-get --fix-broken install -y
             
             #设置/etc/fstab
-            base64_heredoc list_src_fstab | base64 -d | tee /etc/fstab > /dev/null
+            cp /tmp/patch/fstab /etc/fstab
             #echo '----- /etc/fstab -----'
             cat /etc/fstab
             

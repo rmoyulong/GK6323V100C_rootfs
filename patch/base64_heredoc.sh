@@ -163,7 +163,6 @@ WantedBy=multi-user.target
 EOF
 
 # ---------- 写 /etc/fstab（NFS v3 挂载 NAS 音乐目录）
-ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
 read -r -d '' list_src_fstab <<'EOF' || true
 # <file system>          <mount point>  <type>  <options>                             <dump> <pass>
 UUID=$ROOT_PART   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro         0 1
