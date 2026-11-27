@@ -128,7 +128,6 @@ jobs:
             mkdir -p /etc/apt
             base64_heredoc list_src_apt | base64 -d | tee /etc/apt/sources.list > /dev/null
             
-            apt update && apt upgrade  -y
           "
 
           # =====================================================================

@@ -95,7 +95,7 @@ jobs:
 
           ############### 给 p2 扩容 500M 开始 ######################################
           IMG=armbian_s905_p212_LMS.img
-          GROW_MB=50          # 在现有 P2 基础上额外增加的容量
+          GROW_MB=200          # 在现有 P2 基础上额外增加的容量
           ALIGN_MB=20          # 额外余量，避免边界问题
 
           P2_START_SECTOR=$(parted -ms "$IMG" unit s print | awk -F: '$1=="2"{gsub(/s/,"",$2); print $2}')
@@ -262,10 +262,23 @@ jobs:
             #设置自定义squeezelite的服务文件
             mkdir -p /usr/lib/systemd/system
             base64_heredoc list_src_squeezelite_service | base64 -d | tee /usr/lib/systemd/system/squeezelite.service > /dev/null
-            #上传自编高版本squeezelite
+            #编译高版本squeezelite
             mkdir -p /usr/local/bin
-            cp /tmp/patch/usr-local-bin/squeezelite /usr/local/bin/squeezelite
-            chmod -Rf 755 /usr/local/bin/squeezelite
+            #安装依赖
+            apt install build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev -y 
+
+            git clone https://github.com/ralph-irving/squeezelite.git
+            cd squeezelite
+
+            make clean
+            make CFLAGS="-I/usr/include/opus" OPTS="-DDSD -DFFMPEG -DRESAMPLE -DVISEXPORT -DLINKALL -DIR -DUSE_SSL -DOPUS"
+            # 复制到本地二进制目录
+            cp squeezelite /usr/local/bin/
+
+            # 检查系统里是否还有旧版（通常由 apt 安装在 /usr/bin/）
+            which -a squeezelite
+            cd ..
+            rm -rf squeezelite
             
             mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
             mkdir -p /var/lib/squeezeboxserver/prefs/plugin
