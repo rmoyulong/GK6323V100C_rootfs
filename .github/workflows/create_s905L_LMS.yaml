@@ -10,6 +10,12 @@ on:
 permissions:
   contents: write
 
+env:
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+  GITHUB_UUID: "EEEEEEEE"
+  TZ: Asia/Shanghai
+  #USE_CACHEWRTBUILD: true
+
 jobs:
   build-and-release:
     name: 编译 GXL 混合主线 U-Boot 并生成低内存引导镜像
@@ -158,12 +164,13 @@ jobs:
           echo "正在挂载 ROOT 分区并通过 QEMU chroot 预装 squeezelite..."
           sudo mkdir -p /mnt/armbian_root
           ROOT_UUID=$(sudo blkid -s UUID -o value "${LOOP_DEV}p2")
+          echo "GITHUB_UUID=$ROOT_UUID" >> $GITHUB_ENV
+          
           sudo mount "${LOOP_DEV}p2" /mnt/armbian_root
-
           sudo mkdir -p /mnt/armbian_root/tmp/patch
           sudo cp -a "${{ github.workspace }}/patch/." /mnt/armbian_root/tmp/patch/          
           
-          echo "UUID=$ROOT_PART   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro    0 1" > /mnt/armbian_root/tmp/patch/fstab
+          echo "UUID=${{ env.GITHUB_UUID }}   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro    0 1" > /mnt/armbian_root/tmp/patch/fstab
           echo "LABEL=BOOT   /boot    vfat     defaults                                                    0 2" >> /mnt/armbian_root/tmp/patch/fstab
           echo "tmpfs        /tmp     tmpfs    defaults,nosuid                                             0 0" >> /mnt/armbian_root/tmp/patch/fstab
           echo "192.168.31.60:/mnt/music/music  /mnt/NAS  nfs nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0 0" >> /mnt/armbian_root/tmp/patch/fstab
