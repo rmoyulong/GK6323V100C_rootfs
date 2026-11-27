@@ -261,7 +261,7 @@ jobs:
 
             mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
             mkdir -p /var/lib/squeezeboxserver/prefs/plugin
-            tar zxvfp ./golang/plugins.tar.gz -C /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
+            tar zxvfp ./golang/plugins.tar.gz -C /
             rm -rf ./golang
 
             systemctl enable lyrionmusicserver || true
