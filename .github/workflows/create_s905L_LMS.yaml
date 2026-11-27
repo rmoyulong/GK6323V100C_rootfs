@@ -210,7 +210,7 @@ jobs:
             base64_heredoc list_src_zarm | base64 -d | tee /etc/default/armbian-zram-config > /dev/null
 
             #设置zram的大小600M
-            base64_heredoc ist_src_zram-opt | base64 -d | tee /etc/sysctl.d/97-zram-opt.conf > /dev/null
+            base64_heredoc list_src_zram-opt | base64 -d | tee /etc/sysctl.d/97-zram-opt.conf > /dev/null
             
             mkdir -p /etc/sysctl.d
             base64_heredoc list_src_LMS_network | base64 -d | tee /etc/sysctl.d/99-lms-network.conf > /dev/null

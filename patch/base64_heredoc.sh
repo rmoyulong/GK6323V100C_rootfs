@@ -72,23 +72,23 @@ deb-src http://mirrors.aliyun.com/debian-archive/debian bullseye-updates main co
 '
 
 # banner  /etc/update-motd.d/95-cats-banner
-list_src_banner='
+read -r -d '' list_src_banner <<'EOF' || true
 #!/bin/bash
 set -o pipefail
 cat /etc/cats_banner
-'
+EOF
 
 #把zarm改成zstd压缩方式 /etc/default/armbian-zram-config
-list_src_zarm='
+read -r -d '' list_src_zarm <<'EOF' || true
             ENABLED=true
             ZRAM_PERCENTAGE=120
             MEM_LIMIT_PERCENTAGE=100
             ZRAM_MAX_DEVICES=4
             SWAP_ALGORITHM=zstd
-'
+EOF
 
 # LMS 高解析度音乐异步推流网络优化 /etc/sysctl.d/99-lms-network.conf
-list_src_LMS_network='
+read -r -d '' list_src_LMS_network <<'EOF' || true
             # LMS 高解析度音乐异步推流网络优化
             net.core.somaxconn = 1024
             net.core.netdev_max_backlog = 5000
@@ -96,18 +96,19 @@ list_src_LMS_network='
             net.core.wmem_max = 16777216
             net.ipv4.tcp_rmem = 4096 87380 16777216
             net.ipv4.tcp_wmem = 4096 65536 16777216
-'
+EOF
 
 #设置zram的大小600M /etc/sysctl.d/97-zram-opt.conf
 list_src_zram-opt='
+read -r -d '' list_src_zarm <<'EOF' || true
             vm.swappiness=150
             vm.watermark_boost_factor=0
             vm.watermark_scale_factor=125
             vm.page-cluster=0
-'
+EOF
 
 #建立启动后仅运行一次的脚本 /etc/systemd/system/resize-once.service
-list_src_resize-once='
+read -r -d '' list_src_resize-once <<'EOF' || true
             [Unit]
             Description=One-time resize script
             After=local-fs.target			
@@ -120,10 +121,10 @@ list_src_resize-once='
 			
             [Install]
             WantedBy=multi-user.target
-'
+EOF
 
 #对rootfs扩容的sh  /etc/resize.sh
-list_src_resize_sh='
+read -r -d '' list_src_resize_sh <<'EOF' || true
             #!/bin/bash
             set -uo pipefail
             [ -e /etc/sudo.conf ] && chown root:root /etc/sudo.conf
@@ -138,20 +139,20 @@ list_src_resize_sh='
             rm -f /etc/systemd/system/resize-once.service
             rm -f /etc/resize.sh
             systemctl daemon-reload
-'
+EOF
 
 #设置squeezelite的配置 /etc/default/squeezelite
-list_src_squeezelite='
+read -r -d '' list_src_squeezelite <<'EOF' || true
             SL_NAME="Squeezelite"
             SL_SOUNDCARD="hw:1,0"
             SB_EXTRA_ARGS="-D dop -p 85 -b 2048:4096"
-'
+EOF
 
 #设置armbian启动config /mnt/armbian_boot/extlinux/extlinux.conf
-list_src_extlinux='
+read -r -d '' list_src_extlinux <<'EOF' || true
 LABEL Armbian
   LINUX /${KERNEL_FILE}
   INITRD /${INITRD_FILE}
   FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
   APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
-'
+EOF
