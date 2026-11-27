@@ -168,23 +168,23 @@ LABEL Armbian
   LINUX /${KERNEL_FILE}
   INITRD /${INITRD_FILE}
   FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
-  APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0
+  APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
 EOF
 
 #设置armbian启动config /mnt/armbian_boot/extlinux/extlinux.conf  old
 read -r -d '' list_src_extlinux_s905 <<'EOF' || true
-LABEL Armbian
-    LINUX=/zImage
-    INITRD=/uInitrd
-    FDT /dtb/amlogic/meson-gxl-s905x-p212.dtb
-    APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0
+label Armbian
+    kernel /zImage
+    initrd /uInitrd
+    fdt /dtb/amlogic/meson-gxl-s905x-p212.dtb
+    append root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
 EOF
 
-#设置armbian启动config /mnt/armbian_boot/extlinux/extlinux.conf  Armbian_24.5.0_amlogic_s905lb-r3300l_bullseye_6.1.81_server_2024.03.13.img
+#设置armbian启动config /mnt/armbian_boot/uEnv.txt
 read -r -d '' list_src_uEnv <<'EOF' || true
 LABEL Armbian
-    LINUX=/zImage
-    INITRD=/uInitrd
-    FDT=/dtb/amlogic/meson-gxl-s905x-p212.dtb
-    APPEND root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
+LINUX=/zImage
+INITRD=/uInitrd
+FDT=/dtb/amlogic/meson-gxl-s905x-p212.dtb
+APPEND=root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
 EOF
