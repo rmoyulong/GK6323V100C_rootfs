@@ -188,7 +188,7 @@ jobs:
             
             apt-get update
             apt-get install -y --no-install-recommends dos2unix net-tools cifs-utils ethtool screen wget curl sudo file mtools usbutils
-            apt-get install -y --no-install-recommends squeezelite alsa-utils alsa-tools ffmpeg locales
+            apt-get install -y --no-install-recommends alsa-utils alsa-tools ffmpeg locales  #squeezelite
 
             #################### 必要的设置开始 ######################
             mkdir -p /mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
@@ -230,7 +230,7 @@ jobs:
             chmod +x /etc/resize.sh
             #################建立启动后运行一次的脚本-结束################################################
 
-            systemctl enable squeezelite || true
+            #systemctl enable squeezelite || true
           "
 
           # 第二轮 chroot：安装 LMS，并在安装完成后再覆盖配置
@@ -255,15 +255,16 @@ jobs:
             apt-get --fix-broken install -y
             
             #设置squeezelite的配置 
-            base64_heredoc list_src_squeezelite | base64 -d | tee /etc/default/squeezelite > /dev/null
-            echo '----- /etc/default/squeezelite -----'
-            cat /etc/default/squeezelite
+            #base64_heredoc list_src_squeezelite | base64 -d | tee /etc/default/squeezelite > /dev/null
+            #echo '----- /etc/default/squeezelite -----'
+            #cat /etc/default/squeezelite
 
-            #设置squeezelite的服务文件
-            #mkdir -p /usr/lib/systemd/system
-            #base64_heredoc list_src_squeezelite_service | base64 -d | tee /usr/lib/systemd/system/squeezelite.service > /dev/null
-            #用自编高版本squeezelite替换/usr/bin/squeezelite
-            cp /tmp/patch/usr-local-bin/squeezelite /usr/bin/squeezelite
+            #设置自定义squeezelite的服务文件
+            mkdir -p /usr/lib/systemd/system
+            base64_heredoc list_src_squeezelite_service | base64 -d | tee /usr/lib/systemd/system/squeezelite.service > /dev/null
+            #上传自编高版本squeezelite
+            mkdir -p /usr/local/bin
+            cp /tmp/patch/usr-local-bin/squeezelite /usr/local/bin/squeezelite
             chmod -Rf 755 /usr/bin/squeezelite
             
             mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
