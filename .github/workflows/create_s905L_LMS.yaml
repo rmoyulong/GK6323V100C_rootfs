@@ -338,10 +338,10 @@ jobs:
 
           sudo mkdir -p /mnt/armbian_boot/extlinux
           #设置extlinuxl.confg 
-          base64_heredoc list_src_extlinux | base64 -d | tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null
+          base64_heredoc list_src_extlinux | base64 -d | sudo tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null
 
           echo "生成的 extlinux.conf 内容如下："
-          cat /mnt/armbian_boot/extlinux/extlinux.conf
+          sudo cat /mnt/armbian_boot/extlinux/extlinux.conf
 
           sudo sync
           sudo umount /mnt/armbian_boot
