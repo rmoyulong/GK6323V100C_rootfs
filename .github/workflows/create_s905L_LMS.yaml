@@ -345,7 +345,7 @@ jobs:
 
           sudo mkdir -p /mnt/armbian_boot/extlinux
           #设置extlinuxl.confg 
-          base64_heredoc list_src_extlinux raw | base64 -d | sudo tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null
+          base64_heredoc list_src_extlinux_s905 raw | base64 -d | sudo tee /mnt/armbian_boot/extlinux/extlinux.conf > /dev/null
           #设置uEnv.txt 
           base64_heredoc list_src_uEnv | base64 -d | sudo tee /mnt/armbian_boot/uEnv.txt > /dev/null
 
