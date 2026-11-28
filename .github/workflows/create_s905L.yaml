@@ -243,12 +243,13 @@ jobs:
           body: |
             针对北京联通 Q5 (Amlogic GXL S905L / P212) 的 Armbian 自动化构建，集成 792MHz DDR3 BL2 + 主线 U-Boot 2024.01、低内存 `extlinux.conf` 引导配置及 `ext4` 根分区预修复。
             
-            适用于内置 eMMC/NAND 损坏的 Amlogic GXBB 系列盒子，直接从外置 TF 卡冷启动主线 Armbian。
+            适用于内置 eMMC/NAND 损坏的 Amlogic GXL 系列盒子，直接从外置 TF 卡冷启动主线 Armbian。
             根据北京联通Q5救砖盘思路会强制使用内置的固定地址（0x01080000）加载内核
             
             u-boot.bin.sd.bin 适用于只有500m内存的北京视讯Q5
             1g-u-boot.bin.sd.bin 适用于1g内存的北京视讯Q5
-
+            u-boot.bin 原厂北京视讯Q5的U-BOOT（内存容量不限）
+            
             ### TF 卡刷写说明 (Debian/Linux)
             ```bash
             # 1. 将完整的 Armbian 镜像（已包含 U-Boot、低内存 extlinux.conf 与预修复根分区）写入 TF 卡
@@ -259,6 +260,10 @@ jobs:
             sudo dd if=u-boot.bin.sd.bin of=/dev/sda conv=fsync bs=512 skip=1 seek=1
 
             # 3. 同步缓存并安全弹出
+            
+            #增加 使用原厂U-BOOT  单独重新写入主线 U-Boot（保留 MBR 分区表）
+            sudo dd if=u-boot.bin of=/dev/sda conv=fsync,notrunc bs=1 count=444
+            sudo dd if=u-boot.bin of=/dev/sda conv=fsync,notrunc bs=512 skip=1 seek=1
             sync
             ```
           files: |
