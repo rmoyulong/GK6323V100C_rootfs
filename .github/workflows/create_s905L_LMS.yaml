@@ -114,7 +114,7 @@ jobs:
             | jq -r '.[] 
               | select(.tag_name | test("backup_mini_bullseye"; "i"))   
               | .assets[] 
-              | select(.name | test("Armbian_.*amlogic_s905x_bullseye_6.1.133_.*\\.img\\.gz$"))
+              | select(.name | test("Armbian_.*amlogic_s905l2_bullseye_6.1.140_.*\\.img\\.gz$"))
               | .browser_download_url' \
             | head -n 1)
 
@@ -348,6 +348,9 @@ jobs:
           sudo chroot /mnt/armbian_root /bin/bash -c '
               set -e
               export DEBIAN_FRONTEND=noninteractive
+              
+              #################### 必要的设置开始 ######################
+              mkdir -p /mnt/{aliyundrive,boot,rootfs,music,sd,usb,NAS}
               mkdir -p /usr/local/bin
               cp /tmp/patch/squeezelite_arm64 /usr/local/bin/squeezelite
               chmod 0755 /usr/local/bin/squeezelite
