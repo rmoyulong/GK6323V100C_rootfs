@@ -223,7 +223,7 @@ jobs:
           echo "UUID=${ROOT_PART}   /      ext4  defaults,noatime,nodiratime,commit=600,errors=remount-ro    0 1" > /mnt/armbian_root/tmp/patch/fstab
           echo "LABEL=BOOT   /boot    vfat     defaults                                                    0 2" >> /mnt/armbian_root/tmp/patch/fstab
           echo "tmpfs        /tmp     tmpfs    defaults,nosuid                                             0 0" >> /mnt/armbian_root/tmp/patch/fstab
-          echo "192.168.31.60:/mnt/music/music  /mnt/NAS  nfs nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0 0" >> /mnt/armbian_root/tmp/patch/fstab
+          #echo "192.168.31.60:/mnt/music/music  /mnt/NAS  nfs nfsvers=3,proto=tcp,nolock,soft,timeo=100,retrans=2,_netdev,noatime,nofail,x-systemd.mount-timeout=15 0 0" >> /mnt/armbian_root/tmp/patch/fstab
           cat /mnt/armbian_root/tmp/patch/fstab
 
           if [ -L /mnt/armbian_root/etc/resolv.conf ]; then
@@ -294,6 +294,9 @@ jobs:
             #################建立启动后运行一次的脚本-结束################################################
 
             #systemctl enable squeezelite || true
+            
+            #自动挂载远程NAS音乐文件到/mnt/NAS
+            base64_heredoc list_src_mount_NAS | base64 -d | tee //etc/systemd/system/mnt-NAS.mount > /dev/null
           "
 
           # 第二轮 chroot：安装 LMS，并在安装完成后再覆盖配置

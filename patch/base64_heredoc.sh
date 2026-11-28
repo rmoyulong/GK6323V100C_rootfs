@@ -196,3 +196,20 @@ INITRD=/uInitrd
 FDT=/dtb/amlogic/meson-gxl-s905x-p212.dtb
 APPEND=root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
 EOF
+
+#自动挂载/mnt/NAS音乐文件  /etc/systemd/system/mnt-NAS.mount
+read -r -d '' list_src_mount_NAS <<'EOF' || true
+[Unit]
+Description=GIFS mount for NAS music
+After=network-online.target
+Wants=network-online.target
+
+[Mount]
+What=//192.168.31.60/share_music/music
+Where=/mnt/NAS
+Type=cifs
+Options=soft,guest,iocharset=utf8,vers=2.1,uid=0,gid=0,file_mode=0644,dir_mode=0755,rsize=1048576,wsize=1048576,cache=loose,noperm,_netdev
+
+[Install]
+WantedBy=multi-user.target
+EOF
