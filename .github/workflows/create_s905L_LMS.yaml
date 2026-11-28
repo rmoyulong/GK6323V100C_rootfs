@@ -246,7 +246,7 @@ jobs:
             grep -r 'bullseye-backports' /etc/apt/ || echo "backports 源已全部清除"
 
             apt-get update
-            apt-get install -y --no-install-recommends wget dos2unix net-tools davfs2 cifs-utils ethtool screen alsa-utils alsa-tools sudo file mtools locales ffmpeg
+            apt-get install -y wget dos2unix net-tools davfs2 cifs-utils ethtool screen alsa-utils alsa-tools sudo file mtools locales ffmpeg
 
             # 关键修改：清理 apt 缓存，释放空间给后续 LMS 安装
             apt-get clean
@@ -287,7 +287,7 @@ jobs:
             chmod +x /etc/resize.sh
             #################建立启动后运行一次的脚本-结束################################################
 
-            base64_heredoc list_src_mount_NAS | base64 -d | tee /etc/systemd/system/mnt-NAS.mount > /dev/null
+            base64_heredoc list_src_mount_NAS | base64 -d | tee /etc/systemd/system/mnt-NAS.service > /dev/null
           "
 
           # 第二轮 chroot：安装 LMS

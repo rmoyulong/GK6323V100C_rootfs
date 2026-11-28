@@ -197,7 +197,7 @@ FDT=/dtb/amlogic/meson-gxl-s905x-p212.dtb
 APPEND=root=UUID=${ROOT_UUID} rootflags=data=writeback rw console=ttyAML0,115200n8 console=tty0 no_console_suspend consoleblank=0 fsck.fix=yes fsck.repair=yes net.ifnames=0 cma=32M
 EOF
 
-#自动挂载/mnt/NAS音乐文件  /etc/systemd/system/mnt-NAS.mount
+#自动挂载/mnt/NAS音乐文件  /etc/systemd/system/mnt-NAS.service
 read -r -d '' list_src_mount_NAS <<'EOF' || true
 [Unit]
 Description=GIFS mount for NAS music
