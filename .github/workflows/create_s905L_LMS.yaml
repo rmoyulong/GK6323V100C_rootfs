@@ -301,9 +301,10 @@ jobs:
             rm -rf squeezelite
             apt remove build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev -y 
             
-            mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
-            mkdir -p /var/lib/squeezeboxserver/prefs/plugin
-            tar zxvfp ./golang/plugins.tar.gz -C /
+            #LMS plugins
+            #mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
+            #mkdir -p /var/lib/squeezeboxserver/prefs/plugin
+            #tar zxvfp ./golang/plugins.tar.gz -C /
             rm -rf ./golang
 
             systemctl enable lyrionmusicserver || true
