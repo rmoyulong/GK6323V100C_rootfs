@@ -318,6 +318,10 @@ jobs:
             mkdir -p /var/lib/squeezeboxserver/cache
             mkdir -p /var/log/squeezeboxserver
 
+            # 先安装 LMS 所需的 Perl 依赖
+            apt-get install -y libio-socket-ssl-perl libcrypt-openssl-rsa-perl
+
+            # 再安装 LMS
             dpkg -i ./golang/lms_arm.deb
             apt-get --fix-broken install -y
 
