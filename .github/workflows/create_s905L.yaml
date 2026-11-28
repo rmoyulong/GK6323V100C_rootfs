@@ -216,15 +216,15 @@ jobs:
           sudo umount /mnt/armbian_boot
           sudo losetup -d "${LOOP_DEV}"
 
-          #echo "正在向镜像写入 LaFrite 混合主线 U-Boot（保留 MBR 分区表）..."
-          #dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212_LMS.img conv=notrunc,fsync bs=1 count=442
-          #dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212_LMS.img conv=notrunc,fsync bs=512 skip=1 seek=1
+          echo "正在向镜像写入 LaFrite 混合主线 U-Boot（保留 MBR 分区表）..."
+          dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212_LMS.img conv=notrunc,fsync bs=1 count=442
+          dd if=../fip_output/u-boot.bin.sd.bin of=armbian_s905_p212_LMS.img conv=notrunc,fsync bs=512 skip=1 seek=1
           #sync
           
           #使用原厂U-BOOT.BIN启动TF/SD卡
-          cp ${{ github.workspace }}/patch/u-boot.bin ../fip_output/u-boot.bin
-          sudo dd if=../fip_output/u-boot.bin of=/dev/sda conv=fsync,notrunc bs=1 count=444
-          sudo dd if=../fip_output/u-boot.bin of=/dev/sda conv=fsync,notrunc bs=512 skip=1 seek=1
+          #cp ${{ github.workspace }}/patch/u-boot.bin ../fip_output/u-boot.bin
+          #sudo dd if=../fip_output/u-boot.bin of=/dev/sda conv=fsync,notrunc bs=1 count=444
+          #sudo dd if=../fip_output/u-boot.bin of=/dev/sda conv=fsync,notrunc bs=512 skip=1 seek=1
           sync
           
           BUILD_DATE=$(date +%Y.%m.%d)
