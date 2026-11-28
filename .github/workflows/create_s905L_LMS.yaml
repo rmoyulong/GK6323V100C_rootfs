@@ -293,11 +293,13 @@ jobs:
             make CFLAGS="-I/usr/include/opus" OPTS="-DDSD -DFFMPEG -DRESAMPLE -DVISEXPORT -DLINKALL -DIR -DUSE_SSL -DOPUS"
             # 复制到本地二进制目录
             cp squeezelite /usr/local/bin/
+            ls /usr/local/bin/
 
             # 检查系统里是否还有旧版（通常由 apt 安装在 /usr/bin/）
             which -a squeezelite
             cd ..
             rm -rf squeezelite
+            apt remove build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev -y 
             
             mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
             mkdir -p /var/lib/squeezeboxserver/prefs/plugin
