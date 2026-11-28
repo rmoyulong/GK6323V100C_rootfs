@@ -228,7 +228,10 @@ jobs:
 
             source /tmp/patch/base64_heredoc.sh
             mkdir -p /etc/apt
-            base64_heredoc list_src_apt | base64 -d | tee /etc/apt/sources.list > /dev/null
+            # 第一轮 chroot 中，原来是这样：
+            #base64_heredoc list_src_apt | base64 -d | tee /etc/apt/sources.list > /dev/null
+            #改为 拦截sources.list文件内的 bullseye-backports 源，避免出错
+            base64_heredoc list_src_apt | base64 -d | grep -v 'bullseye-backports' | tee /etc/apt/sources.list > /dev/null
 
             apt-get update
             apt-get install -y --no-install-recommends wget dos2unix net-tools davfs2 cifs-utils ethtool screen alsa-utils alsa-tools sudo file mtools locales ffmpeg
