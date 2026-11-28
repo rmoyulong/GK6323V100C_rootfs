@@ -364,6 +364,11 @@ jobs:
           echo "正在清理 chroot 环境..."
           sudo sync
           sleep 2
+          
+          echo "=== 验证镜像根分区内的 squeezelite ==="
+          ls -lh /mnt/armbian_root/usr/local/bin/squeezelite || { echo "错误：镜像内未找到 squeezelite"; exit 1; }
+          file /mnt/armbian_root/usr/local/bin/squeezelite | grep -q "ARM aarch64" || { echo "错误：镜像内的 squeezelite 架构不对"; exit 1; }
+          echo "=== 镜像内 squeezelite 验证通过 ==="
 
           sudo umount /mnt/armbian_root/dev/pts 2>/dev/null || sudo umount -lf /mnt/armbian_root/dev/pts
           sudo umount /mnt/armbian_root/dev      2>/dev/null || sudo umount -lf /mnt/armbian_root/dev
