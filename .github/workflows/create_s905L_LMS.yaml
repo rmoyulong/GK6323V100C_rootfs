@@ -281,26 +281,7 @@ jobs:
             #设置自定义squeezelite的服务文件
             mkdir -p /usr/lib/systemd/system
             base64_heredoc list_src_squeezelite_service | base64 -d | tee /usr/lib/systemd/system/squeezelite.service > /dev/null
-            #编译高版本squeezelite
-            mkdir -p /usr/local/bin
-            #安装依赖
-            apt install build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev -y 
-
-            git clone https://github.com/ralph-irving/squeezelite.git
-            cd squeezelite
-
-            make clean
-            make CFLAGS="-I/usr/include/opus" OPTS="-DDSD -DFFMPEG -DRESAMPLE -DVISEXPORT -DLINKALL -DIR -DUSE_SSL -DOPUS"
-            # 复制到本地二进制目录
-            cp squeezelite /usr/local/bin/
-            ls /usr/local/bin/
-
-            # 检查系统里是否还有旧版（通常由 apt 安装在 /usr/bin/）
-            which -a squeezelite
-            cd ..
-            rm -rf squeezelite
-            apt remove build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev -y 
-            
+                        
             #LMS plugins
             #mkdir -p /var/lib/squeezeboxserver/cache/InstalledPlugins/Plugins
             #mkdir -p /var/lib/squeezeboxserver/prefs/plugin
@@ -308,10 +289,39 @@ jobs:
             rm -rf ./golang
 
             systemctl enable lyrionmusicserver || true
-            apt-get clean
-            rm -rf /var/lib/apt/lists/*
           "
 
+          # 第三轮 chroot：编译高版本squeezelite
+          echo "开始编译高版本squeezelite..."
+            sudo chroot /mnt/armbian_root /bin/bash -c '
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+
+              apt install -y build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev
+
+              cd /tmp
+              rm -rf squeezelite
+              git clone https://github.com/ralph-irving/squeezelite.git
+              cd squeezelite
+
+              make clean
+              make CFLAGS="-I/usr/include/opus" OPTS="-DDSD -DFFMPEG -DRESAMPLE -DVISEXPORT -DLINKALL -DIR -DUSE_SSL -DOPUS"
+
+              # 强制检查：文件必须存在，且是 ARM aarch64 架构
+              test -f squeezelite || { echo "错误：make 未生成 squeezelite 可执行文件"; exit 1; }
+              file squeezelite | grep -q "ARM aarch64" || { echo "错误：生成的 squeezelite 不是 ARM aarch64 架构"; file squeezelite; exit 1; }
+
+              cp squeezelite /usr/local/bin/
+              test -f /usr/local/bin/squeezelite || { echo "错误：复制到 /usr/local/bin 失败"; exit 1; }
+              ls -lh /usr/local/bin/squeezelite
+              file /usr/local/bin/squeezelite
+
+              cd /
+              rm -rf /tmp/squeezelite
+              apt remove -y build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev
+              apt-get clean
+              rm -rf /var/lib/apt/lists/*
+            '
           # =====================================================================
           # 收尾
           # =====================================================================
