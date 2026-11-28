@@ -70,6 +70,56 @@ jobs:
           #mv fip_output/u-boot.bin.sd.bin fip_output/u-boot.bin.sd.bin
           #ls -lh fip_output/u-boot.bin.sd.bin
 
+      - name: 交叉编译高版本 squeezelite
+        run: |
+          set -e
+          echo "=== 配置 arm64 交叉编译环境 ==="
+          sudo dpkg --add-architecture arm64
+          # 把 arm64 源指向 ports，x86_64 源保持不变
+          sudo sed -i 's|^deb http://archive.ubuntu.com/ubuntu/|deb [arch=amd64] http://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list || true
+          sudo sed -i 's|^deb http://security.ubuntu.com/ubuntu/|deb [arch=amd64] http://security.ubuntu.com/ubuntu/|' /etc/apt/sources.list || true
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ $(lsb_release -cs) main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64-ports.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ $(lsb_release -cs)-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64-ports.list
+          sudo apt-get update
+
+          echo "=== 安装交叉编译链与 arm64 开发库 ==="
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            libasound2-dev:arm64 libflac-dev:arm64 libmad0-dev:arm64 \
+            libvorbis-dev:arm64 libopus-dev:arm64 libsoxr-dev:arm64 \
+            libavformat-dev:arm64 libavcodec-dev:arm64 libavutil-dev:arm64 \
+            libmpg123-dev:arm64 libfaad-dev:arm64 libssl-dev:arm64 \
+            libopusfile-dev:arm64 liblirc-dev:arm64
+
+          echo "=== 克隆并交叉编译 squeezelite ==="
+          cd "${{ github.workspace }}"
+          rm -rf squeezelite-src
+          git clone --depth 1 https://github.com/ralph-irving/squeezelite.git squeezelite-src
+          cd squeezelite-src
+
+          # 交叉编译：覆盖 CC 和链接库搜索路径
+          make clean
+          make \
+            CC=aarch64-linux-gnu-gcc \
+            CFLAGS="-I/usr/include/opus -I/usr/aarch64-linux-gnu/include" \
+            LDFLAGS="-L/usr/aarch64-linux-gnu/lib -Wl,-rpath-link,/usr/aarch64-linux-gnu/lib" \
+            OPTS="-DDSD -DFFMPEG -DRESAMPLE -DVISEXPORT -DLINKALL -DIR -DUSE_SSL -DOPUS"
+
+          echo "=== 验证产物 ==="
+          test -f squeezelite || { echo "错误：交叉编译未生成 squeezelite"; exit 1; }
+          file squeezelite | grep -q "ARM aarch64" || { echo "错误：产物不是 ARM aarch64 架构"; file squeezelite; exit 1; }
+          ls -lh squeezelite
+          file squeezelite
+
+          echo "=== 放入 patch 目录，供 chroot 步骤复制 ==="
+          mkdir -p "${{ github.workspace }}/patch"
+          cp squeezelite "${{ github.workspace }}/patch/squeezelite_arm64"
+          ls -lh "${{ github.workspace }}/patch/squeezelite_arm64"
+
+          echo "=== 清理源码（保留二进制） ==="
+          cd "${{ github.workspace }}"
+          rm -rf squeezelite-src
+          
       - name: 下载 Armbian S905X 基础镜像
         run: |
           set -e
@@ -292,36 +342,19 @@ jobs:
           "
 
           # 第三轮 chroot：编译高版本squeezelite
-          echo "开始编译高版本squeezelite..."
-            sudo chroot /mnt/armbian_root /bin/bash -c '
+          echo "准备拷贝高版本squeezelite..."
+          sudo chroot /mnt/armbian_root /bin/bash -c '
               set -e
               export DEBIAN_FRONTEND=noninteractive
-
-              apt install -y build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev
-
-              cd /tmp
-              rm -rf squeezelite
-              git clone https://github.com/ralph-irving/squeezelite.git
-              cd squeezelite
-
-              make clean
-              make CFLAGS="-I/usr/include/opus" OPTS="-DDSD -DFFMPEG -DRESAMPLE -DVISEXPORT -DLINKALL -DIR -DUSE_SSL -DOPUS"
-
-              # 强制检查：文件必须存在，且是 ARM aarch64 架构
-              test -f squeezelite || { echo "错误：make 未生成 squeezelite 可执行文件"; exit 1; }
-              file squeezelite | grep -q "ARM aarch64" || { echo "错误：生成的 squeezelite 不是 ARM aarch64 架构"; file squeezelite; exit 1; }
-
-              cp squeezelite /usr/local/bin/
-              test -f /usr/local/bin/squeezelite || { echo "错误：复制到 /usr/local/bin 失败"; exit 1; }
-              ls -lh /usr/local/bin/squeezelite
+              mkdir -p /usr/local/bin
+              cp /tmp/patch/squeezelite_arm64 /usr/local/bin/squeezelite
+              chmod 0755 /usr/local/bin/squeezelite
+              test -x /usr/local/bin/squeezelite || { echo "错误：squeezelite 未正确复制"; exit 1; }
               file /usr/local/bin/squeezelite
-
-              cd /
-              rm -rf /tmp/squeezelite
-              apt remove -y build-essential git libasound2-dev libflac-dev libmad0-dev libvorbis-dev libopus-dev libsoxr-dev libavformat-dev libavcodec-dev libavutil-dev libmpg123-dev libfaad-dev libssl-dev ffmpeg libopusfile-dev liblirc-dev
+              
               apt-get clean
               rm -rf /var/lib/apt/lists/*
-            '
+          '
           # =====================================================================
           # 收尾
           # =====================================================================
