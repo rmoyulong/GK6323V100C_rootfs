@@ -230,8 +230,20 @@ jobs:
             mkdir -p /etc/apt
             # 第一轮 chroot 中，原来是这样：
             #base64_heredoc list_src_apt | base64 -d | tee /etc/apt/sources.list > /dev/null
-            #改为 拦截sources.list文件内的 bullseye-backports 源，避免出错
-            base64_heredoc list_src_apt | base64 -d | grep -v 'bullseye-backports' | tee /etc/apt/sources.list > /dev/null
+            #改为
+            # 先彻底清掉基础镜像自带的源配置，避免 backports 等失效源残留
+            rm -f /etc/apt/sources.list.d/*.list
+            rm -f /etc/apt/sources.list.d/*.sources
+            base64_heredoc list_src_apt | base64 -d | tee /etc/apt/sources.list > /dev/null
+
+            # 保险起见，再全局扫一遍并删除任何含 bullseye-backports 的行
+            sed -i '/bullseye-backports/d' /etc/apt/sources.list
+            for f in /etc/apt/sources.list.d/*; do
+              [ -f "$f" ] && sed -i '/bullseye-backports/d' "$f"
+            done
+
+            # 验证：下面这条命令应该没有任何输出
+            grep -r 'bullseye-backports' /etc/apt/ || echo "backports 源已全部清除"
 
             apt-get update
             apt-get install -y --no-install-recommends wget dos2unix net-tools davfs2 cifs-utils ethtool screen alsa-utils alsa-tools sudo file mtools locales ffmpeg
