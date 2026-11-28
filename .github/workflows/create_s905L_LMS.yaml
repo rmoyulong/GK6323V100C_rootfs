@@ -243,10 +243,17 @@ jobs:
             done
 
             # 验证：下面这条命令应该没有任何输出
-            grep -r 'bullseye-backports' /etc/apt/ || echo "backports 源已全部清除"
+            if grep -rq 'bullseye-backports' /etc/apt/ 2>/dev/null; then
+                echo "警告：仍存在 backports 源"
+                grep -rn 'bullseye-backports' /etc/apt/
+            else
+                echo "backports 源已全部清除"
+            fi
 
             apt-get update
-            apt-get install -y wget dos2unix net-tools davfs2 cifs-utils ethtool screen alsa-utils alsa-tools sudo file mtools locales ffmpeg
+            apt-get install -y wget dos2unix net-tools cifs-utils ethtool screen alsa-utils alsa-tools sudo file mtools locales ffmpeg
+            dpkg --configure -a
+            apt-get -f install -y
 
             # 关键修改：清理 apt 缓存，释放空间给后续 LMS 安装
             apt-get clean
